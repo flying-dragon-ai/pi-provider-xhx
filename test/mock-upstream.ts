@@ -30,6 +30,8 @@ export interface MockOptions {
 	catalog?: unknown;
 	/** Access token lifetime in seconds. */
 	tokenTtlSeconds?: number;
+	/** Shape of the chat stream: normal, empty, malformed, unicode, or truncate. */
+	chatMode?: "normal" | "empty" | "malformed" | "unicode" | "truncate";
 	/** Fixed port for manual end-to-end runs; 0 picks a free one. */
 	port?: number;
 }
@@ -250,6 +252,22 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 						chunk({ tool_calls: [{ index: 0, function: { arguments: '"a.txt"}' } }] }),
 						chunk({}, { finish_reason: "tool_calls" }),
 					);
+				} else if (options.chatMode === "empty") {
+					frames.push(chunk({}, { finish_reason: "stop" }));
+				} else if (options.chatMode === "malformed") {
+					frames.push(
+						"data: {not json at all\n\n",
+						chunk({ content: "你好" }),
+						chunk({}, { finish_reason: "stop" }),
+					);
+				} else if (options.chatMode === "unicode") {
+					// Split a surrogate pair across two frames.
+					frames.push(
+						chunk({ content: "🙂".slice(0, 1) }),
+						chunk({ content: "🙂".slice(1) }),
+						chunk({ content: " done" }),
+						chunk({}, { finish_reason: "stop" }),
+					);
 				} else {
 					frames.push(
 						chunk({ reasoning_content: "先想一想" }),
@@ -275,9 +293,14 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 				);
 
 				const delay = options.frameDelayMs ?? 0;
-				for (const frame of frames) {
+				for (const [index, frame] of frames.entries()) {
 					if (res.writableEnded || res.destroyed) return;
 					res.write(frame);
+					if (options.chatMode === "truncate" && index === 1) {
+						// Drop the connection mid-stream, like a gateway that dies.
+						res.destroy();
+						return;
+					}
 					if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
 				}
 				res.end();

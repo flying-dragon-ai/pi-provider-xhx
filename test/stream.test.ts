@@ -181,4 +181,66 @@ describe("streamXhx", () => {
 		const { final } = await collect(stream);
 		expect(final?.stopReason).toBe("aborted");
 	});
+
+	it("handles an empty text response", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatMode: "empty" });
+		process.env.XHX_ORIGIN = mock.origin;
+
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.stopReason).toBe("stop");
+		expect(final?.content).toEqual([]);
+	});
+
+	it("skips a malformed SSE frame and keeps the rest", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatMode: "malformed" });
+		process.env.XHX_ORIGIN = mock.origin;
+
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.stopReason).toBe("stop");
+		expect(final?.content).toEqual([{ type: "text", text: "你好" }]);
+	});
+
+	it("keeps a surrogate pair intact when it spans two frames", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatMode: "unicode" });
+		process.env.XHX_ORIGIN = mock.origin;
+
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.content).toEqual([{ type: "text", text: "🙂 done" }]);
+	});
+
+	it("reports a stream that dies mid-response", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatMode: "truncate" });
+		process.env.XHX_ORIGIN = mock.origin;
+
+		const { types, final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(types.at(-1)).toBe("error");
+		expect(final?.stopReason).toBe("error");
+	});
+
+	it("forwards image input as an OpenAI content array", async () => {
+		const context = normalizeContext({
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "这张图里是什么？" },
+						{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+					],
+					timestamp: Date.now(),
+				},
+			],
+		});
+		await collect(streamXhx(model({ input: ["text", "image"] }), context, { apiKey: mock.validAccessToken() }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as { messages: { content: unknown }[] };
+		const content = body.messages[0]?.content as { type: string; image_url?: { url: string } }[];
+		expect(Array.isArray(content)).toBe(true);
+		expect(content.some((part) => part.type === "image_url" && part.image_url?.url.startsWith("data:image/png;base64,"))).toBe(
+			true,
+		);
+	});
 });

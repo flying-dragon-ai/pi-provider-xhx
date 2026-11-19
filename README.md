@@ -116,6 +116,10 @@ be the strict-OpenAI ones — `store: false`, `role: "developer"`, `reasoning_ef
 guarantees the classic Chat Completions surface, so `src/compat.ts` turns all of those off and
 sends `max_tokens` instead.
 
+A single unparseable `data:` frame would make the OpenAI SDK's SSE parser throw and kill an
+otherwise healthy answer, so `src/sse.ts` wraps fetch and drops only the frames that do not
+parse. One bad frame costs one frame, not the response.
+
 `stream_options: {include_usage: true}` is kept because usage accounting depends on it. If the
 gateway rejects that field with a 400, the stream wrapper retries once without it — the
 rejection happens before any content event, so the retry cannot duplicate output.
@@ -125,7 +129,7 @@ rejection happens before any content event, so the retry cannot duplicate output
 ```bash
 npm install
 npm run typecheck
-npm test          # 41 tests against a mock gateway
+npm test          # 47 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
@@ -145,7 +149,7 @@ XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
 
 What the test suite and the real runs cover:
 
-- 41 tests against the mock gateway: login (happy path, state mismatch, expired code, HTTP
+- 47 tests against the mock gateway: login (happy path, state mismatch, expired code, HTTP
   error), refresh (rotation, no rotation, rejection), catalog parsing and 401 handling, model
   mapping, streaming (text, `reasoning_content`, usage, tool calls, `stream_options` retry,
   401, abort), account endpoints, provider registration.

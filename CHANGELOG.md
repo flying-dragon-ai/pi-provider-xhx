@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.3] - 2026-11-19
+
+- Drop unparseable SSE frames instead of letting one kill the whole answer.
+- Cover empty responses, malformed frames, split surrogate pairs, mid-stream disconnects,
+  and image input in the test suite.
+
 ## [0.1.2] - 2026-11-19
 
 - Add a troubleshooting section for the failures users actually hit.

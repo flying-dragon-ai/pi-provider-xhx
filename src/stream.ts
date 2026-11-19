@@ -26,6 +26,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { USER_AGENT } from "./constants.ts";
 import { XHX_COMPAT, XHX_COMPAT_NO_STREAM_OPTIONS } from "./compat.ts";
+import { withSseSanitizer } from "./sse.ts";
 
 /** Fields the gateway may reject; only these trigger the retry. */
 const RETRYABLE_FIELD = /stream_options|include_usage/i;
@@ -47,6 +48,7 @@ function withHeaders(options: SimpleStreamOptions | undefined): SimpleStreamOpti
 	return {
 		...(options ?? {}),
 		headers: { "User-Agent": USER_AGENT, ...(options?.headers ?? {}) },
+		fetch: withSseSanitizer(options?.fetch ?? globalThis.fetch),
 	};
 }
 
