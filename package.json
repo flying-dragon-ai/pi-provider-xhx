@@ -1,0 +1,57 @@
+{
+  "name": "pi-provider-xhx",
+  "version": "0.1.0",
+  "description": "Pi extension for 小浣熊 (SenseTime Raccoon) — OAuth login, live model catalog, OpenAI-compatible streaming",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "xiaohuanxiong",
+    "raccoon",
+    "sensetime",
+    "provider",
+    "openai-compatible"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:@earendil-works/pi-ai --external:@earendil-works/pi-coding-agent",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flying-dragon-ai/pi-provider-xhx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/flying-dragon-ai/pi-provider-xhx/issues"
+  },
+  "homepage": "https://github.com/flying-dragon-ai/pi-provider-xhx#readme"
+}
