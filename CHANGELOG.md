@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.2] - 2026-11-19
+
+- Add a troubleshooting section for the failures users actually hit.
+
 ## [0.1.1] - 2026-11-19
 
 - Document what the test suite and the real runs cover, and what they do not.

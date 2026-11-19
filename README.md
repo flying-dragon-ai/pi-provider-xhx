@@ -169,6 +169,20 @@ credentials this repository does not have.
   `enable_thinking` field is sent, because the gateway's accepted field differs per vendor.
 - Upstream model behaviour, quotas, and risk controls can change without notice.
 
+## Troubleshooting
+
+**`401 authorization_verify_error`** — the access token is expired or was invalidated by
+another client refreshing the same account. Run `/login xhx` again.
+
+**`/login xhx` says the state does not match** — the callback URL came from an earlier login
+attempt. Start the login again and paste the URL from that attempt.
+
+**The model list is the six-model fallback** — the catalog fetch failed. `/xhx` shows the
+origin and auth source; a 401 there means the token is dead, a timeout means the network.
+
+**`stream_options` errors** — the extension retries once without the field. If the retry also
+fails, the gateway rejected something else; the error text carries the upstream message.
+
 ## Credits
 
 The protocol — endpoints, envelope shapes, catalog parsing rules, and the OAuth callback
