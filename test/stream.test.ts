@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
+import { XHX_COMPAT } from "../src/compat.ts";
 import { isStreamOptionsRejection, streamXhx } from "../src/stream.ts";
 import { startMockUpstream, type MockUpstream } from "./mock-upstream.ts";
 
@@ -106,12 +107,50 @@ describe("streamXhx", () => {
 		]);
 	});
 
+	it("echoes reasoning_content back on assistant history", async () => {
+		const context = normalizeContext({
+			messages: [
+				{ role: "user", content: "第一问", timestamp: Date.now() },
+				{
+					role: "assistant",
+					api: "openai-completions",
+					provider: "xhx",
+					model: "sn-glm-5-3-flash",
+					content: [
+						{ type: "thinking", thinking: "先想一想", thinkingSignature: "reasoning_content" },
+						{ type: "text", text: "第一答" },
+					],
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
+				{ role: "user", content: "第二问", timestamp: Date.now() },
+			],
+		});
+		await collect(streamXhx(model(), context, { apiKey: mock.validAccessToken() }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as { messages: Record<string, unknown>[] };
+		const assistant = body.messages.find((message) => message.role === "assistant");
+		expect(assistant?.content).toBe("第一答");
+		expect(assistant?.reasoning_content).toBe("先想一想");
+	});
+
 	it("retries without stream_options when the gateway rejects the field", async () => {
 		await mock.close();
 		mock = await startMockUpstream({ rejectStreamOptions: true });
 		process.env.XHX_ORIGIN = mock.origin;
 
-		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		// Production models carry the compat block, so the retry must override it.
+		const { final } = await collect(
+			streamXhx(model({ compat: XHX_COMPAT }), userContext, { apiKey: mock.validAccessToken() }),
+		);
 		expect(final?.stopReason).toBe("stop");
 		expect(final?.content).toEqual([
 			{ type: "thinking", thinking: "先想一想", thinkingSignature: "reasoning_content" },

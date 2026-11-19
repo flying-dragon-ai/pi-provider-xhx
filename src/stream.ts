@@ -38,7 +38,9 @@ export function isStreamOptionsRejection(message: string | undefined): boolean {
 
 function withCompat(model: Model<Api>, compat: typeof XHX_COMPAT): Model<Api> {
 	const existing = (model as { compat?: Record<string, unknown> }).compat ?? {};
-	return { ...model, compat: { ...compat, ...existing } } as Model<Api>;
+	// The explicit flags win: a retry must be able to turn a field off even when
+	// the model config already carries the default set.
+	return { ...model, compat: { ...existing, ...compat } } as Model<Api>;
 }
 
 function withHeaders(options: SimpleStreamOptions | undefined): SimpleStreamOptions {
