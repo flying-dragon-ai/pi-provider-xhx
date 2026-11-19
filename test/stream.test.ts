@@ -87,6 +87,39 @@ describe("streamXhx", () => {
 		expect(request?.headers["user-agent"]).toMatch(/^pi-provider-xhx\//);
 	});
 
+	it("sends raccoon_thinking for the selected level", async () => {
+		const thinkingModel = model({
+			reasoning: true,
+			thinkingLevelMap: { off: "level_1", minimal: "level_1", low: "level_1", medium: "level_3", high: "level_5", xhigh: "level_5", max: "level_5" },
+		});
+		await collect(streamXhx(thinkingModel, userContext, { apiKey: mock.validAccessToken(), reasoning: "medium" }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
+		expect(body.raccoon_thinking).toBe("level_3");
+	});
+
+	it("sends the model's floor when no level is selected", async () => {
+		const thinkingModel = model({
+			reasoning: true,
+			thinkingLevelMap: { off: "level_1", minimal: "level_1", low: "level_1", medium: "level_3", high: "level_5", xhigh: "level_5", max: "level_5" },
+		});
+		await collect(streamXhx(thinkingModel, userContext, { apiKey: mock.validAccessToken() }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
+		expect(body.raccoon_thinking).toBe("level_1");
+	});
+
+	it("sends off when the model can disable thinking", async () => {
+		const thinkingModel = model({
+			reasoning: true,
+			thinkingLevelMap: { off: "off", minimal: "level_1", low: "level_1", medium: "level_3", high: "level_5", xhigh: "level_5", max: "level_5" },
+		});
+		await collect(streamXhx(thinkingModel, userContext, { apiKey: mock.validAccessToken() }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
+		expect(body.raccoon_thinking).toBe("off");
+	});
+
 	it("assembles tool calls", async () => {
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "TOOLCALL read a.txt", timestamp: Date.now() }],

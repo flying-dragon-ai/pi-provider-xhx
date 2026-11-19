@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0] - 2026-11-19
+
+- Bind pi thinking levels to the gateway: read `params.raccoon_thinking` from the catalog,
+  mark those models reasoning-capable, and send the mapped `raccoon_thinking` value with each
+  request. `/thinking`, `--thinking`, and the model selector now reach the upstream.
+- Explain an interrupted `openai` SDK install instead of surfacing a bare module error.
+
 ## [0.2.0] - 2026-11-19
 
 - Login is now a browser OAuth loopback flow: the extension binds a throwaway server on

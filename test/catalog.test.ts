@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Model } from "@earendil-works/pi-ai/compat";
 import { normalizeContext } from "@earendil-works/pi-ai/utils/transcript";
-import { fetchCatalog, parseCatalog, toModelConfigs } from "../src/catalog.ts";
+import { buildThinkingLevelMap, fetchCatalog, parseCatalog, toModelConfigs } from "../src/catalog.ts";
 import { XHX_COMPAT } from "../src/compat.ts";
 import { startMockUpstream, type MockUpstream } from "./mock-upstream.ts";
 
@@ -71,6 +71,85 @@ describe("fetchCatalog", () => {
 
 	it("throws on 401", async () => {
 		await expect(fetchCatalog("not-a-token")).rejects.toThrow(/HTTP 401/);
+	});
+});
+
+describe("thinking", () => {
+	it("reads raccoon_thinking from the catalog", () => {
+		const entries = parseCatalog({
+			categories: [
+				{
+					models: [
+						{
+							name: "a",
+							params: {
+								raccoon_thinking: {
+									supported: true,
+									can_disable: true,
+									default_level: "off",
+									display_levels: [{ value: "level_1" }, { value: "level_5" }],
+								},
+							},
+						},
+						{ name: "b" },
+					],
+				},
+			],
+		});
+		expect(entries[0]?.thinking).toEqual({
+			supported: true,
+			canDisable: true,
+			levels: ["level_1", "level_5"],
+			defaultLevel: "off",
+		});
+		expect(entries[1]?.thinking).toBeUndefined();
+	});
+
+	it("maps pi levels onto a three-level model", () => {
+		expect(buildThinkingLevelMap({ supported: true, canDisable: false, levels: ["level_1", "level_3", "level_5"], defaultLevel: "level_1" })).toEqual({
+			off: "level_1",
+			minimal: "level_1",
+			low: "level_1",
+			medium: "level_3",
+			high: "level_5",
+			xhigh: "level_5",
+			max: "level_5",
+		});
+	});
+
+	it("maps pi levels onto a five-level model", () => {
+		const map = buildThinkingLevelMap({
+			supported: true,
+			canDisable: false,
+			levels: ["level_1", "level_2", "level_3", "level_4", "level_5"],
+			defaultLevel: "level_1",
+		});
+		expect(map.minimal).toBe("level_1");
+		expect(map.low).toBe("level_2");
+		expect(map.medium).toBe("level_3");
+		expect(map.high).toBe("level_5");
+		expect(map.off).toBe("level_1");
+	});
+
+	it("offers off only when the model can disable thinking", () => {
+		const map = buildThinkingLevelMap({
+			supported: true,
+			canDisable: true,
+			levels: ["level_1", "level_3", "level_5"],
+			defaultLevel: "off",
+		});
+		expect(map.off).toBe("off");
+	});
+
+	it("marks catalog models as reasoning-capable", async () => {
+		const configs = toModelConfigs(await fetchCatalog(mock.validAccessToken()));
+		const glm = configs.find((config) => config.id === "sn-glm-5-3-flash") as unknown as Record<string, unknown>;
+		expect(glm.reasoning).toBe(true);
+		expect(glm.thinkingLevelMap).toMatchObject({ medium: "level_3", max: "level_5" });
+		// The second mock model has no raccoon_thinking block.
+		const kimi = configs.find((config) => config.id === "sn-kimi-k3") as unknown as Record<string, unknown>;
+		expect(kimi.reasoning).toBe(false);
+		expect(kimi.thinkingLevelMap).toBeUndefined();
 	});
 });
 

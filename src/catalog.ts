@@ -10,9 +10,24 @@
  *   - `visible` defaults to true
  */
 
+import type { ThinkingLevelMap } from "@earendil-works/pi-ai";
 import type { ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, llmBase } from "./constants.ts";
 import { XHX_COMPAT } from "./compat.ts";
+
+/**
+ * Thinking control, as the catalog describes it under `params.raccoon_thinking`.
+ *
+ * The gateway takes a `raccoon_thinking` request field whose values are the
+ * `display_levels` entries (`level_1` … `level_5`). `can_disable` says whether
+ * `"off"` is accepted; when it is false the lowest level is the floor.
+ */
+export interface ThinkingConfig {
+	supported: boolean;
+	canDisable: boolean;
+	levels: string[];
+	defaultLevel: string;
+}
 
 export interface CatalogEntry {
 	id: string;
@@ -22,6 +37,7 @@ export interface CatalogEntry {
 	contextWindow?: number;
 	maxTokens?: number;
 	visible: boolean;
+	thinking?: ThinkingConfig;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -65,6 +81,21 @@ function normalizeEntry(raw: unknown): CatalogEntry | undefined {
 	const normalized: CatalogEntry = { id, name, description, tags, visible };
 	if (contextWindow !== undefined) normalized.contextWindow = contextWindow;
 	if (maxTokens !== undefined) normalized.maxTokens = maxTokens;
+
+	const thinking = asRecord(params.raccoon_thinking);
+	if (thinking.supported === true) {
+		const levels = Array.isArray(thinking.display_levels)
+			? thinking.display_levels.map((level) => asString(asRecord(level).value)).filter((level) => level !== "")
+			: [];
+		if (levels.length > 0) {
+			normalized.thinking = {
+				supported: true,
+				canDisable: thinking.can_disable === true,
+				levels,
+				defaultLevel: asString(thinking.default_level) || levels[0] || "",
+			};
+		}
+	}
 	return normalized;
 }
 
@@ -124,15 +155,42 @@ export async function fetchCatalog(accessToken: string, signal?: AbortSignal): P
 export function toModelConfigs(entries: CatalogEntry[], baseUrl = llmBase()): ProviderModelConfig[] {
 	return entries
 		.filter((entry) => entry.visible)
-		.map((entry) => ({
-			id: entry.id,
-			name: entry.name,
-			reasoning: false,
-			input: ["text", "image"] as ("text" | "image")[],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: entry.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-			maxTokens: entry.maxTokens ?? DEFAULT_MAX_TOKENS,
-			baseUrl,
-			compat: XHX_COMPAT,
-		}));
+		.map((entry) => {
+			const thinking = entry.thinking;
+			const config: ProviderModelConfig = {
+				id: entry.id,
+				name: entry.name,
+				reasoning: thinking !== undefined,
+				input: ["text", "image"] as ("text" | "image")[],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: entry.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+				maxTokens: entry.maxTokens ?? DEFAULT_MAX_TOKENS,
+				baseUrl,
+				compat: XHX_COMPAT,
+			};
+			if (thinking) config.thinkingLevelMap = buildThinkingLevelMap(thinking);
+			return config;
+		});
+}
+
+/**
+ * Map pi's thinking levels onto the gateway's `raccoon_thinking` values.
+ *
+ * The catalog lists the levels a model accepts (`level_1` … `level_5`, sometimes
+ * a subset). `off` is only offered when the model says it can be disabled;
+ * otherwise the lowest level is the floor, because the gateway always reasons.
+ */
+export function buildThinkingLevelMap(thinking: ThinkingConfig): ThinkingLevelMap {
+	const levels = thinking.levels;
+	const last = levels.length - 1;
+	const pick = (index: number): string => levels[Math.min(Math.max(index, 0), last)] ?? levels[0] ?? "";
+	return {
+		off: thinking.canDisable ? "off" : pick(0),
+		minimal: pick(0),
+		low: pick(Math.floor(last / 3)),
+		medium: pick(Math.floor(last / 2)),
+		high: pick(last),
+		xhigh: pick(last),
+		max: pick(last),
+	};
 }

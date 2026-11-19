@@ -73,7 +73,26 @@ fails, so the model list never goes empty mid-session.
 | Max output | `max_tokens` from the catalog, else 8K |
 | Input | text and images (OpenAI multimodal `content` arrays) |
 | Cost | zero — the gateway bills in points, not USD per token |
-| Thinking | surfaced from `delta.reasoning_content` as thinking blocks |
+| Thinking | `raccoon_thinking`, mapped from pi's thinking level (see below) |
+
+### Thinking levels
+
+The catalog describes each model's thinking control under `params.raccoon_thinking`: the levels
+it accepts (`level_1` … `level_5`, sometimes a subset) and whether `off` is allowed. The
+extension maps pi's thinking levels onto those values and sends the result as the
+`raccoon_thinking` request field:
+
+| pi level | three-level model | five-level model |
+| --- | --- | --- |
+| off | `level_1` (or `off` when the model allows it) | `level_1` (or `off`) |
+| minimal | `level_1` | `level_1` |
+| low | `level_1` | `level_2` |
+| medium | `level_3` | `level_3` |
+| high / xhigh / max | `level_5` | `level_5` |
+
+Pick a level with `/thinking`, `--thinking <level>`, or the model's thinking selector. The
+gateway always reasons for models that cannot disable it, so `off` means "the lowest level"
+there. Reasoning arrives as `delta.reasoning_content` and is rendered as thinking blocks.
 
 ## Commands
 
@@ -137,7 +156,7 @@ rejection happens before any content event, so the retry cannot duplicate output
 ```bash
 npm install
 npm run typecheck
-npm test          # 48 tests against a mock gateway
+npm test          # 56 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
@@ -157,7 +176,7 @@ XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
 
 What the test suite and the real runs cover:
 
-- 48 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
+- 56 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
   HTTP error, paste fallback), refresh (rotation, no rotation, rejection), catalog parsing and
   401 handling, model mapping, streaming (text, `reasoning_content`, usage, tool calls,
   `stream_options` retry, 401, abort, empty response, malformed frame, split surrogate pair,

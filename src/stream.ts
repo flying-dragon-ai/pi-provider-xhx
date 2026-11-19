@@ -44,12 +44,48 @@ function withCompat(model: Model<Api>, compat: typeof XHX_COMPAT): Model<Api> {
 	return { ...model, compat: { ...existing, ...compat } } as Model<Api>;
 }
 
-function withHeaders(options: SimpleStreamOptions | undefined): SimpleStreamOptions {
+/**
+ * The gateway's thinking field. pi has no `thinkingFormat` for it, so the value
+ * is derived from the model's `thinkingLevelMap` and injected into the payload.
+ */
+function thinkingValue(model: Model<Api>, level: SimpleStreamOptions["reasoning"]): string | undefined {
+	const map = model.thinkingLevelMap;
+	if (!map) return undefined;
+	// pi has no "off" level: an absent level means the user turned thinking off,
+	// so the model's own off value (or its floor) is what gets sent.
+	const mapped = level ? map[level] : map.off;
+	return typeof mapped === "string" && mapped !== "" ? mapped : undefined;
+}
+
+function buildOptions(model: Model<Api>, options: SimpleStreamOptions | undefined): SimpleStreamOptions {
+	const thinking = thinkingValue(model, options?.reasoning);
+	const callerOnPayload = options?.onPayload;
 	return {
 		...(options ?? {}),
 		headers: { "User-Agent": USER_AGENT, ...(options?.headers ?? {}) },
 		fetch: withSseSanitizer(options?.fetch ?? globalThis.fetch),
+		onPayload: async (payload, target) => {
+			if (thinking !== undefined && payload !== null && typeof payload === "object") {
+				(payload as Record<string, unknown>).raccoon_thinking = thinking;
+			}
+			if (!callerOnPayload) return payload;
+			const replaced = await callerOnPayload(payload, target);
+			return replaced ?? payload;
+		},
 	};
+}
+
+/**
+ * A half-finished `npm install` in the shared extension root leaves the `openai`
+ * SDK missing files, and the raw error ("Cannot find module
+ * './internal/auth/x509-api-origin.js'") says nothing about what to do.
+ */
+function describeFailure(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	if (/Cannot find module/.test(message) && /[\\/]openai[\\/]/.test(message)) {
+		return `${message}\n\nThe openai SDK in the shared extension install is incomplete — an install was interrupted. Run \`pi update --extensions\` (or reinstall the package) and retry.`;
+	}
+	return message;
 }
 
 function errorEvent(model: Model<Api>, message: string): AssistantMessageEvent {
@@ -85,7 +121,7 @@ export function streamXhx(
 	const stream = createAssistantMessageEventStream();
 
 	void (async () => {
-		const requestOptions = withHeaders(options);
+		const requestOptions = buildOptions(model, options);
 		try {
 			const inner = openAICompletionsApi().streamSimple(withCompat(model, XHX_COMPAT), context, requestOptions);
 			const iterator = inner[Symbol.asyncIterator]();
@@ -110,7 +146,7 @@ export function streamXhx(
 			}
 			stream.end();
 		} catch (error) {
-			stream.push(errorEvent(model, error instanceof Error ? error.message : String(error)));
+			stream.push(errorEvent(model, describeFailure(error)));
 			stream.end();
 		}
 	})();

@@ -14,7 +14,16 @@ let seen = 0;
 setInterval(() => {
 	for (; seen < mock.requests.length; seen += 1) {
 		const request = mock.requests[seen];
-		process.stderr.write(`[mock] ${request?.method} ${request?.path}\n`);
+		let detail = "";
+		if (request?.path.endsWith("/chat/completions")) {
+			try {
+				const body = JSON.parse(request.body) as Record<string, unknown>;
+				detail = ` raccoon_thinking=${String(body.raccoon_thinking)} max_tokens=${String(body.max_tokens)}`;
+			} catch {
+				detail = " (unparseable body)";
+			}
+		}
+		process.stderr.write(`[mock] ${request?.method} ${request?.path}${detail}\n`);
 	}
 }, 100).unref();
 

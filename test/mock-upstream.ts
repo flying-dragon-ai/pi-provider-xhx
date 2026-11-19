@@ -83,6 +83,19 @@ const DEFAULT_CATALOG = {
 						tags: ["fast"],
 						context_window: 131072,
 						max_tokens: 8192,
+						params: {
+							raccoon_thinking: {
+								managed: true,
+								supported: true,
+								can_disable: false,
+								default_level: "level_1",
+								display_levels: [
+									{ value: "level_1", label: "Minimal" },
+									{ value: "level_3", label: "Medium" },
+									{ value: "level_5", label: "Max" },
+								],
+							},
+						},
 					},
 					{
 						name: "sn-kimi-k3",
