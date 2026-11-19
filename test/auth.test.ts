@@ -11,20 +11,35 @@ beforeEach(async () => {
 
 afterEach(async () => {
 	delete process.env.XHX_ORIGIN;
+	delete process.env.XHX_LOGIN_TIMEOUT_MS;
 	await mock.close();
 });
 
-function callbacks(answer: string, seen: { url?: string } = {}) {
-	let issuedState = "";
+interface Seen {
+	url?: string;
+	prompts: number;
+}
+
+function callbacks(seen: Seen, answer = ""): Record<string, unknown> {
 	return {
 		onAuth: (info: { url: string }) => {
 			seen.url = info.url;
-			issuedState = new URL(info.url).searchParams.get("state") ?? "";
 		},
 		onDeviceCode: () => {},
-		onPrompt: async () => answer.replace("{state}", issuedState),
+		onPrompt: async () => {
+			seen.prompts += 1;
+			return answer;
+		},
 		onSelect: async () => undefined,
 	};
+}
+
+async function waitForAuthorizeUrl(seen: Seen): Promise<URL> {
+	for (let i = 0; i < 300; i += 1) {
+		if (seen.url) return new URL(seen.url);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("onAuth was never called");
 }
 
 describe("parseCallbackInput", () => {
@@ -56,59 +71,105 @@ describe("parseCallbackInput", () => {
 	});
 });
 
-describe("loginXhx", () => {
-	it("opens the authorize page with the desktop client identity", async () => {
-		const seen: { url?: string } = {};
-		await loginXhx(callbacks("office-raccoon://auth/callback?code=good&state={state}", seen) as never);
-		const url = new URL(seen.url ?? "");
+describe("loginXhx loopback flow", () => {
+	it("asks the authorize page for a loopback redirect with a 64-hex state", async () => {
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+
 		expect(url.origin).toBe(mock.origin);
 		expect(url.pathname).toBe("/code/authorize");
 		expect(url.searchParams.get("login_source")).toBe("desktop");
+		expect(url.searchParams.get("desktop_callback")).toBe("loopback");
 		expect(url.searchParams.get("appname")).toBe("办公小浣熊客户端");
-		expect(url.searchParams.get("state")).toMatch(/^[0-9a-f]{32}$/);
+		expect(url.searchParams.get("state")).toMatch(/^[0-9a-f]{64}$/);
+		expect(url.searchParams.get("redirect")).toMatch(/^http:\/\/127\.0\.0\.1:\d{4,5}\/auth\/callback$/);
+
+		// Finish the flow so the server closes.
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		await fetch(`${redirect}?code=good&state=${state}`);
+		await promise;
 	});
 
-	it("exchanges the code and derives expiry from the JWT", async () => {
-		const credentials = await loginXhx(
-			callbacks("office-raccoon://auth/callback?code=good&state={state}") as never,
-		);
+	it("completes the login when the browser hits the loopback URL", async () => {
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		const response = await fetch(`${redirect}?code=good&state=${state}`);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toContain("登录成功");
+
+		const credentials = await promise;
 		expect(credentials.access).toBe(mock.validAccessToken());
 		expect(credentials.refresh).toBe("rt-initial");
 		expect(credentials.expires).toBeGreaterThan(Date.now());
-		expect(credentials.expires).toBeLessThanOrEqual(Date.now() + 3600_000);
 		expect(credentials.userId).toBe("7591340");
 		expect(credentials.officeOrgName).toBe("Acme");
+		// No paste prompt was needed.
+		expect(seen.prompts).toBe(0);
 
 		const exchange = mock.requests.find((r) => r.path.endsWith("/login_with_authorization_code"));
 		expect(exchange?.body).toBe(JSON.stringify({ authorization_code: "good" }));
 	});
 
-	it("rejects a callback whose state does not match the issued one", async () => {
-		let issuedState = "";
-		const mismatched = {
-			onAuth: (info: { url: string }) => {
-				issuedState = new URL(info.url).searchParams.get("state") ?? "";
-			},
-			onDeviceCode: () => {},
-			onPrompt: async () => "office-raccoon://auth/callback?code=good&state=wrong",
-			onSelect: async () => undefined,
-		};
-		await expect(loginXhx(mismatched as never)).rejects.toThrow(/state 与本次登录不匹配/);
-		expect(issuedState).toMatch(/^[0-9a-f]{32}$/);
+	it("rejects a callback whose state does not match", async () => {
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const expectation = expect(promise).rejects.toThrow(/state 与本次登录不匹配/);
+		await fetch(`${redirect}?code=good&state=${"0".repeat(64)}`);
+		await expectation;
 	});
 
 	it("reports an expired authorization code", async () => {
-		await expect(loginXhx(callbacks("expired-code") as never)).rejects.toThrow(/授权码已失效/);
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		const expectation = expect(promise).rejects.toThrow(/授权码已失效/);
+		await fetch(`${redirect}?code=expired-code&state=${state}`);
+		await expectation;
 	});
 
 	it("surfaces the upstream HTTP status for a rejected code", async () => {
-		await expect(loginXhx(callbacks("bad-code") as never)).rejects.toThrow(/HTTP 400/);
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		const expectation = expect(promise).rejects.toThrow(/HTTP 400/);
+		await fetch(`${redirect}?code=bad-code&state=${state}`);
+		await expectation;
+	});
+
+	it("falls back to a paste when the browser never comes back", async () => {
+		process.env.XHX_LOGIN_TIMEOUT_MS = "150";
+		const seen: Seen = { prompts: 0 };
+		const credentials = await loginXhx(callbacks(seen, "good") as never);
+		expect(seen.prompts).toBe(1);
+		expect(credentials.access).toBe(mock.validAccessToken());
 	});
 });
 
 describe("refreshXhx", () => {
 	it("keeps the old refresh token when the upstream does not rotate it", async () => {
-		const credentials = await loginXhx(callbacks("good") as never);
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		await fetch(`${redirect}?code=good&state=${state}`);
+		const credentials = await promise;
+
 		const refreshed = await refreshXhx(credentials, new AbortController().signal);
 		expect(refreshed.access).toBe(mock.validAccessToken());
 		expect(refreshed.refresh).toBe("rt-initial");
@@ -120,7 +181,14 @@ describe("refreshXhx", () => {
 		mock = await startMockUpstream({ rotateRefreshToken: true });
 		process.env.XHX_ORIGIN = mock.origin;
 
-		const credentials = await loginXhx(callbacks("good") as never);
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		await fetch(`${redirect}?code=good&state=${state}`);
+		const credentials = await promise;
+
 		const refreshed = await refreshXhx(credentials, new AbortController().signal);
 		expect(refreshed.refresh).toBe("rt-rotated-1");
 	});

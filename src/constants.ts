@@ -53,10 +53,34 @@ export function pointsBase(origin = resolveOrigin()): string {
 	return `${origin}/api/web/points/v1`;
 }
 
-export function authorizeUrl(origin: string, state: string): string {
+/**
+ * Build the authorize URL for the loopback flow.
+ *
+ * The page validates the pair strictly (`E()` in the authorize chunk):
+ * `redirect` must match `^http://127\.0\.0\.1:<port>/auth/callback$` with a
+ * port in 1024..65535, `state` must be exactly 64 lowercase hex characters,
+ * `login_source` must be `desktop`, and `desktop_callback` must be `loopback`.
+ * When all of that holds the page redirects to the loopback URL with
+ * `?code=…&state=…` instead of the `office-raccoon://` scheme.
+ */
+export function authorizeUrl(origin: string, state: string, redirect?: string): string {
 	const url = new URL("/code/authorize", origin);
 	url.searchParams.set("login_source", LOGIN_SOURCE);
 	url.searchParams.set("appname", LOGIN_APP_NAME);
 	url.searchParams.set("state", state);
+	if (redirect) {
+		url.searchParams.set("desktop_callback", "loopback");
+		url.searchParams.set("redirect", redirect);
+	}
 	return url.toString();
+}
+
+/** Path the authorize page redirects to on the loopback server. */
+export const LOOPBACK_PATH = "/auth/callback";
+
+/** How long to wait for the browser to come back before offering a paste. */
+export function loginTimeoutMs(): number {
+	const raw = process.env.XHX_LOGIN_TIMEOUT_MS?.trim();
+	const parsed = raw ? Number(raw) : Number.NaN;
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60 * 1000;
 }

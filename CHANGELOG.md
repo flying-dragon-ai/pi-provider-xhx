@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] - 2026-11-19
+
+- Login is now a browser OAuth loopback flow: the extension binds a throwaway server on
+  127.0.0.1 and the authorize page redirects straight back to it, so there is nothing to
+  copy. The paste flow remains as a fallback when the loopback is unreachable.
+- Read the account id from the IAM token `sub` claim.
+- Refresh the fallback model list to the current live catalog (seven models, real context and
+  output limits).
+- Verified end to end against the live gateway with a real account: login, chat, tool calls,
+  catalog refresh, balance.
+
 ## [0.1.3] - 2026-11-19
 
 - Drop unparseable SSE frames instead of letting one kill the whole answer.

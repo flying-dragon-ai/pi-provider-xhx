@@ -38,7 +38,8 @@ export function jwtExpiry(token: string): number {
 export function jwtUserId(token: string): string {
 	const payload = decodePayload(token);
 	if (!payload) return "";
-	for (const key of ["user_id", "userId", "uid", "userID"]) {
+	// The IAM token carries the account id in `sub`; older shapes used user_id/uid.
+	for (const key of ["sub", "user_id", "userId", "uid", "userID"]) {
 		const value = payload[key];
 		if (typeof value === "string" && value !== "") return value;
 		if (typeof value === "number" && value !== 0) return String(value);

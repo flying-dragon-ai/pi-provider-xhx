@@ -24,25 +24,31 @@ Inside pi:
 
 ## Login
 
-`/login xhx` opens the official authorize page:
+`/login xhx` runs a browser OAuth loopback flow. The extension binds a throwaway HTTP server
+on `127.0.0.1`, opens the official authorize page, and the page redirects the browser straight
+back to that local server once you sign in:
 
 ```text
-https://xiaohuanxiong.com/code/authorize?login_source=desktop&appname=办公小浣熊客户端&state=…
+https://xiaohuanxiong.com/code/authorize
+  ?login_source=desktop
+  &desktop_callback=loopback
+  &appname=办公小浣熊客户端
+  &state=<64 hex>
+  &redirect=http://127.0.0.1:<port>/auth/callback
 ```
 
-Sign in with WeChat, SMS, or password. The page then redirects to a custom scheme:
+Sign in with WeChat, SMS, or password. The browser lands on a "登录成功" page, the extension
+verifies `state`, exchanges the one-time code at `auth/v1/login_with_authorization_code`, and
+stores the credentials in `~/.pi/agent/auth.json`. Nothing to copy.
 
-```text
-office-raccoon://auth/callback?code=…&state=…
-```
+The authorize page validates the loopback pair strictly — the redirect must be
+`http://127.0.0.1:<port>/auth/callback` with a port in 1024..65535, and `state` must be exactly
+64 lowercase hex characters. Anything else falls back to the `office-raccoon://auth/callback`
+scheme, which a browser cannot open.
 
-Your browser cannot open that scheme — that is expected. Copy the whole address out of the
-address bar and paste it into the prompt. The extension verifies `state`, exchanges the
-one-time code at `auth/v1/login_with_authorization_code`, and stores the credentials in
-`~/.pi/agent/auth.json`.
-
-Pasting only the `code` also works; the `state` check is skipped in that case.
-
+If the browser cannot reach the loopback (remote shell, firewall), the login waits
+`XHX_LOGIN_TIMEOUT_MS` (default 5 minutes) and then asks for the callback URL instead. Pasting
+only the `code` also works; the `state` check is skipped in that case.
 ### Token lifetime
 
 The access token is a JWT. The extension reads `exp` and schedules a refresh five minutes
@@ -57,7 +63,8 @@ processes refreshing one refresh token invalidate each other.
 The catalog is live: `GET llm/v2/model_catalog` on every session start, filtered to
 `visible` entries. Model ids are the upstream ids — the gateway does no aliasing.
 
-A six-model fallback list is registered at load time and restored whenever a catalog fetch
+A seven-model fallback list (the current live catalog) is registered at load time and restored
+whenever a catalog fetch
 fails, so the model list never goes empty mid-session.
 
 | | |
@@ -83,6 +90,7 @@ fails, so the model list never goes empty mid-session.
 | --- | --- |
 | `XHX_ACCESS_TOKEN` | use a token directly instead of `/login`; also the fallback when no credential is stored |
 | `XHX_ORIGIN` | point the extension at a mirror or a local mock (default `https://xiaohuanxiong.com`) |
+| `XHX_LOGIN_TIMEOUT_MS` | how long the loopback login waits for the browser before offering a paste (default 300000) |
 
 `XHX_ACCESS_TOKEN` is enough to start using the provider without the login flow:
 
@@ -129,7 +137,7 @@ rejection happens before any content event, so the retry cannot duplicate output
 ```bash
 npm install
 npm run typecheck
-npm test          # 47 tests against a mock gateway
+npm test          # 48 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
@@ -149,19 +157,21 @@ XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
 
 What the test suite and the real runs cover:
 
-- 47 tests against the mock gateway: login (happy path, state mismatch, expired code, HTTP
-  error), refresh (rotation, no rotation, rejection), catalog parsing and 401 handling, model
-  mapping, streaming (text, `reasoning_content`, usage, tool calls, `stream_options` retry,
-  401, abort), account endpoints, provider registration.
+- 48 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
+  HTTP error, paste fallback), refresh (rotation, no rotation, rejection), catalog parsing and
+  401 handling, model mapping, streaming (text, `reasoning_content`, usage, tool calls,
+  `stream_options` retry, 401, abort, empty response, malformed frame, split surrogate pair,
+  mid-stream disconnect, image input), account endpoints, provider registration.
 - A real `pi` process against the mock gateway: text reply, tool-call round trip (pi executed
   `read` and sent the result back), thinking blocks, and the session-start catalog refresh.
-- The live host: `llm/v2/model_catalog` answers 401 without a bearer token, `/code/authorize`
+- **The live gateway with a real account**: `/login xhx` completed through the loopback
+  redirect and stored an IAM JWT; a chat answered `1+1等于2。`; a tool-call round trip read a
+  file and returned its contents; `/xhx-models` listed the seven live catalog models with
+  their upstream descriptions; `points/v1/balance` returned the account's points.
+- The live host without credentials: `llm/v2/model_catalog` answers 401, `/code/authorize`
   answers 307, `auth/v1/refresh` answers `code=100002` for a malformed token, and a chat with
   a bogus token surfaces `401 authorization_verify_error`.
 - The published tarball: `pi -e npm:pi-provider-xhx --list-models` registers the provider.
-
-Not covered: a successful chat against the live gateway with a real account. That needs
-credentials this repository does not have.
 
 ## Limitations
 
