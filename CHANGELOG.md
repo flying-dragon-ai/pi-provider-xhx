@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.1] - 2026-11-19
+
+- Document what the test suite and the real runs cover, and what they do not.
+
 ## [0.1.0] - 2026-11-19
 
 Initial release.

@@ -125,11 +125,11 @@ rejection happens before any content event, so the retry cannot duplicate output
 ```bash
 npm install
 npm run typecheck
-npm test          # 40 tests against a mock gateway
+npm test          # 41 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
-`test/mock-upstream.ts` implements the gateway's four endpoints with the documented response
+`test/mock-upstream.ts` implements the gateway's endpoints with the documented response
 shapes: the `{code,message,data}` envelope, the `categories[].models[]` catalog, and
 OpenAI-shaped SSE frames carrying `reasoning_content`, tool calls, and a trailing usage chunk.
 
@@ -140,6 +140,24 @@ node test/manual/serve-mock.ts 18080          # prints {origin, token}
 XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
   pi -e . -p "hello" --provider xhx --model sn-glm-5-3-flash
 ```
+
+## Verification
+
+What the test suite and the real runs cover:
+
+- 41 tests against the mock gateway: login (happy path, state mismatch, expired code, HTTP
+  error), refresh (rotation, no rotation, rejection), catalog parsing and 401 handling, model
+  mapping, streaming (text, `reasoning_content`, usage, tool calls, `stream_options` retry,
+  401, abort), account endpoints, provider registration.
+- A real `pi` process against the mock gateway: text reply, tool-call round trip (pi executed
+  `read` and sent the result back), thinking blocks, and the session-start catalog refresh.
+- The live host: `llm/v2/model_catalog` answers 401 without a bearer token, `/code/authorize`
+  answers 307, `auth/v1/refresh` answers `code=100002` for a malformed token, and a chat with
+  a bogus token surfaces `401 authorization_verify_error`.
+- The published tarball: `pi -e npm:pi-provider-xhx --list-models` registers the provider.
+
+Not covered: a successful chat against the live gateway with a real account. That needs
+credentials this repository does not have.
 
 ## Limitations
 
