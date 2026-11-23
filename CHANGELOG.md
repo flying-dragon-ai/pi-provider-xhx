@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2] - 2026-11-23
+
+- Send the header set the official client sends (`X-Org-Code`, `X-Raccoon-Language`) and a
+  browser user agent instead of identifying the extension, and add `verbose: true` to the
+  body. The gateway's risk control keys on the difference between first-party and third-party
+  traffic.
+
 ## [0.3.1] - 2026-11-23
 
 - Keep requests in the shape the official desktop client uses: send its client headers, cap

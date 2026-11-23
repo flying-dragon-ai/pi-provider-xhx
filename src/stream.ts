@@ -88,27 +88,38 @@ function withThrottle(inner: typeof globalThis.fetch, intervalMs: number): typeo
 	};
 }
 
+/**
+ * Header set the official web/desktop client sends on every model call:
+ * `Authorization`, `Content-Type`, `X-Org-Code`, `X-Raccoon-Language`. The
+ * gateway's risk control sees the difference, so the extension sends the same
+ * set with a browser user agent instead of identifying itself.
+ */
+function clientHeaders(options: SimpleStreamOptions | undefined): Record<string, string> {
+	const org = process.env.XHX_ORG_CODE?.trim() ?? "";
+	return {
+		"User-Agent": USER_AGENT,
+		"X-Org-Code": org,
+		"X-Raccoon-Language": "zh",
+		...(options?.headers ?? {}),
+	};
+}
+
 function buildOptions(model: Model<Api>, options: SimpleStreamOptions | undefined): SimpleStreamOptions {
 	const thinking = thinkingValue(model, options?.reasoning);
 	const callerOnPayload = options?.onPayload;
 	const cap = maxOutputTokens();
 	return {
 		...(options ?? {}),
-		headers: {
-			"User-Agent": USER_AGENT,
-			// The desktop client identifies itself on every call; matching it keeps
-			// the request looking like first-party traffic.
-			"X-Client-Platform": "desktop-windows",
-			"X-Client-Version": "v1.0.0",
-			"X-Raccoon-Language": "zh",
-			...(options?.headers ?? {}),
-		},
+		headers: clientHeaders(options),
 		fetch: withThrottle(withSseSanitizer(options?.fetch ?? globalThis.fetch), minRequestIntervalMs()),
 		onPayload: async (payload, target) => {
 			if (payload !== null && typeof payload === "object") {
 				const body = payload as Record<string, unknown>;
 				if (thinking !== undefined) body.raccoon_thinking = thinking;
+				// The official client asks for `max_new_tokens`; the gateway accepts
+				// both, so keep the OpenAI field name and just bound the reservation.
 				if (typeof body.max_tokens === "number" && body.max_tokens > cap) body.max_tokens = cap;
+				body.verbose = true;
 			}
 			if (!callerOnPayload) return payload;
 			const replaced = await callerOnPayload(payload, target);

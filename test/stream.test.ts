@@ -80,11 +80,12 @@ describe("streamXhx", () => {
 		expect(body.model).toBe("sn-glm-5-3-flash");
 		expect(body.stream).toBe(true);
 		expect(body.max_tokens).toBe(256);
+		expect(body.verbose).toBe(true);
 		expect(body.max_completion_tokens).toBeUndefined();
 		expect(body.store).toBeUndefined();
 		expect(body.stream_options).toEqual({ include_usage: true });
 		expect(request?.headers.authorization).toBe(`Bearer ${mock.validAccessToken()}`);
-		expect(request?.headers["user-agent"]).toMatch(/^pi-provider-xhx\//);
+		expect(request?.headers["user-agent"]).toMatch(/^Mozilla\/5\.0 \(Windows NT 10\.0/);
 	});
 
 	it("sends raccoon_thinking for the selected level", async () => {
@@ -125,7 +126,8 @@ describe("streamXhx", () => {
 		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
 		const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
 		expect(body.max_tokens).toBe(16_384);
-		expect(request?.headers["x-client-platform"]).toBe("desktop-windows");
+		expect(request?.headers["x-org-code"]).toBe("");
+		expect(request?.headers["x-raccoon-language"]).toBe("zh");
 		expect(request?.headers["x-raccoon-language"]).toBe("zh");
 	});
 

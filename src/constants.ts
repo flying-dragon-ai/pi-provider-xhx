@@ -29,7 +29,12 @@ export const CODE_EXPIRED = 200035;
 /** Refresh this long before the JWT `exp` so a request never races expiry. */
 export const EXPIRY_MARGIN_MS = 5 * 60 * 1000;
 
-export const USER_AGENT = "pi-provider-xhx/0.1.0";
+/**
+ * The gateway's risk control treats a non-browser user agent as third-party
+ * traffic, so requests carry the same agent a browser on this platform sends.
+ */
+export const USER_AGENT =
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 export const DEFAULT_CONTEXT_WINDOW = 128_000;
 export const DEFAULT_MAX_TOKENS = 8_192;

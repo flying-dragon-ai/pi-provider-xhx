@@ -112,6 +112,7 @@ there. Reasoning arrives as `delta.reasoning_content` and is rendered as thinkin
 | `XHX_LOGIN_TIMEOUT_MS` | how long the loopback login waits for the browser before offering a paste (default 300000) |
 | `XHX_MAX_TOKENS` | output reservation sent with each request (default 16384; the catalog allows 100000) |
 | `XHX_MIN_INTERVAL_MS` | minimum spacing between requests (default 400; `0` disables) |
+| `XHX_ORG_CODE` | value for the `X-Org-Code` header the official client sends (default empty) |
 
 `XHX_ACCESS_TOKEN` is enough to start using the provider without the login flow:
 
@@ -223,10 +224,12 @@ blocked model calls. It does not clear on its own in a reasonable time. Open the
 click the avatar in the bottom-left, choose 「问题反馈」 and ask them to lift the restriction,
 or sign in with another account.
 
-The extension already keeps its traffic in the shape the official client uses — desktop
-client headers, a 16K output reservation instead of the catalog's 100K, and at least 400 ms
-between requests — but a long agent session still sends far more tokens than a human chatting
-in the web app, so a consumer account can still be flagged.
+The extension sends what the official client sends: the same header set (`Authorization`,
+`Content-Type`, `X-Org-Code`, `X-Raccoon-Language`), a browser user agent, `verbose: true`, a
+16K output reservation instead of the catalog's 100K, and at least 400 ms between requests.
+What it cannot hide is the workload: a long agent session sends far more tokens than a human
+chatting in the web app, and pi's system prompt is not the office assistant's. A consumer
+account can still be flagged.
 
 ## Credits
 
