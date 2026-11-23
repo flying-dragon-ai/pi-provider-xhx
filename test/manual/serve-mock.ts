@@ -18,7 +18,7 @@ setInterval(() => {
 		if (request?.path.endsWith("/chat/completions")) {
 			try {
 				const body = JSON.parse(request.body) as Record<string, unknown>;
-				detail = ` raccoon_thinking=${String(body.raccoon_thinking)} max_tokens=${String(body.max_tokens)}`;
+				detail = ` raccoon_thinking=${String(body.raccoon_thinking)} max_tokens=${String(body.max_tokens)} verbose=${String(body.verbose)} ua=${String(request.headers["user-agent"]).slice(0, 20)} org=${String(request.headers["x-org-code"])} lang=${String(request.headers["x-raccoon-language"])}`;
 			} catch {
 				detail = " (unparseable body)";
 			}
