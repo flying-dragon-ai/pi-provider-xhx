@@ -31,7 +31,7 @@ export interface MockOptions {
 	/** Access token lifetime in seconds. */
 	tokenTtlSeconds?: number;
 	/** Shape of the chat stream: normal, empty, malformed, unicode, or truncate. */
-	chatMode?: "normal" | "empty" | "malformed" | "unicode" | "truncate";
+	chatMode?: "normal" | "empty" | "malformed" | "unicode" | "truncate" | "blocked";
 	/** Fixed port for manual end-to-end runs; 0 picks a free one. */
 	port?: number;
 }
@@ -230,6 +230,16 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 					return;
 				}
 				const parsed = JSON.parse(body || "{}") as Record<string, unknown>;
+				if (options.chatMode === "blocked") {
+					sendJson(res, 429, {
+						error: {
+							code: 200108,
+							message: "系统检测到当前账号存在异常调用，模型调用功能已暂时受限。",
+							type: "rate_limit_error",
+						},
+					});
+					return;
+				}
 				if (options.rejectStreamOptions && parsed.stream_options !== undefined) {
 					sendJson(res, 400, {
 						error: { message: "invalid request: unknown field `stream_options`", type: "invalid_request_error" },

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1] - 2026-11-23
+
+- Keep requests in the shape the official desktop client uses: send its client headers, cap
+  the output reservation at 16K instead of the catalog's 100K, and space requests at least
+  400 ms apart. The gateway's risk control flags accounts that look like a scraper.
+- Explain a `429` / `code 200108` block instead of surfacing the raw upstream message.
+
 ## [0.3.0] - 2026-11-19
 
 - Bind pi thinking levels to the gateway: read `params.raccoon_thinking` from the catalog,

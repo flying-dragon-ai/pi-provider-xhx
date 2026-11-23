@@ -120,6 +120,26 @@ describe("streamXhx", () => {
 		expect(body.raccoon_thinking).toBe("off");
 	});
 
+	it("caps the output reservation and identifies as the desktop client", async () => {
+		await collect(streamXhx(model({ maxTokens: 100_000 }), userContext, { apiKey: mock.validAccessToken(), maxTokens: 100_000 }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
+		expect(body.max_tokens).toBe(16_384);
+		expect(request?.headers["x-client-platform"]).toBe("desktop-windows");
+		expect(request?.headers["x-raccoon-language"]).toBe("zh");
+	});
+
+	it("explains a risk-control block", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatMode: "blocked" });
+		process.env.XHX_ORIGIN = mock.origin;
+
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.stopReason).toBe("error");
+		expect(final?.errorMessage).toContain("200108");
+		expect(final?.errorMessage).toContain("问题反馈");
+	});
+
 	it("assembles tool calls", async () => {
 		const context = normalizeContext({
 			messages: [{ role: "user", content: "TOOLCALL read a.txt", timestamp: Date.now() }],

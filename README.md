@@ -110,6 +110,8 @@ there. Reasoning arrives as `delta.reasoning_content` and is rendered as thinkin
 | `XHX_ACCESS_TOKEN` | use a token directly instead of `/login`; also the fallback when no credential is stored |
 | `XHX_ORIGIN` | point the extension at a mirror or a local mock (default `https://xiaohuanxiong.com`) |
 | `XHX_LOGIN_TIMEOUT_MS` | how long the loopback login waits for the browser before offering a paste (default 300000) |
+| `XHX_MAX_TOKENS` | output reservation sent with each request (default 16384; the catalog allows 100000) |
+| `XHX_MIN_INTERVAL_MS` | minimum spacing between requests (default 400; `0` disables) |
 
 `XHX_ACCESS_TOKEN` is enough to start using the provider without the login flow:
 
@@ -156,7 +158,7 @@ rejection happens before any content event, so the retry cannot duplicate output
 ```bash
 npm install
 npm run typecheck
-npm test          # 56 tests against a mock gateway
+npm test          # 58 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
@@ -176,7 +178,7 @@ XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
 
 What the test suite and the real runs cover:
 
-- 56 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
+- 58 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
   HTTP error, paste fallback), refresh (rotation, no rotation, rejection), catalog parsing and
   401 handling, model mapping, streaming (text, `reasoning_content`, usage, tool calls,
   `stream_options` retry, 401, abort, empty response, malformed frame, split surrogate pair,
@@ -215,6 +217,16 @@ origin and auth source; a 401 there means the token is dead, a timeout means the
 
 **`stream_options` errors** — the extension retries once without the field. If the retry also
 fails, the gateway rejected something else; the error text carries the upstream message.
+
+**`429` with `code 200108`** — the gateway has flagged the account for abnormal usage and
+blocked model calls. It does not clear on its own in a reasonable time. Open the 小浣熊 app,
+click the avatar in the bottom-left, choose 「问题反馈」 and ask them to lift the restriction,
+or sign in with another account.
+
+The extension already keeps its traffic in the shape the official client uses — desktop
+client headers, a 16K output reservation instead of the catalog's 100K, and at least 400 ms
+between requests — but a long agent session still sends far more tokens than a human chatting
+in the web app, so a consumer account can still be flagged.
 
 ## Credits
 

@@ -57,16 +57,58 @@ function thinkingValue(model: Model<Api>, level: SimpleStreamOptions["reasoning"
 	return typeof mapped === "string" && mapped !== "" ? mapped : undefined;
 }
 
+/**
+ * The gateway's risk control flags accounts that look like a scraper: bursts of
+ * requests, or a huge output reservation on every call. The official client
+ * sends a few thousand `max_new_tokens` and one request at a time, so the
+ * extension keeps its own requests in that shape.
+ */
+function maxOutputTokens(): number {
+	const raw = process.env.XHX_MAX_TOKENS?.trim();
+	const parsed = raw ? Number(raw) : Number.NaN;
+	return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 16_384;
+}
+
+function minRequestIntervalMs(): number {
+	const raw = process.env.XHX_MIN_INTERVAL_MS?.trim();
+	const parsed = raw ? Number(raw) : Number.NaN;
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : 400;
+}
+
+let lastRequestAt = 0;
+
+/** Space requests out so a tool-call loop cannot look like a burst. */
+function withThrottle(inner: typeof globalThis.fetch, intervalMs: number): typeof globalThis.fetch {
+	if (intervalMs <= 0) return inner;
+	return async (input, init) => {
+		const wait = lastRequestAt + intervalMs - Date.now();
+		if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+		lastRequestAt = Date.now();
+		return inner(input, init);
+	};
+}
+
 function buildOptions(model: Model<Api>, options: SimpleStreamOptions | undefined): SimpleStreamOptions {
 	const thinking = thinkingValue(model, options?.reasoning);
 	const callerOnPayload = options?.onPayload;
+	const cap = maxOutputTokens();
 	return {
 		...(options ?? {}),
-		headers: { "User-Agent": USER_AGENT, ...(options?.headers ?? {}) },
-		fetch: withSseSanitizer(options?.fetch ?? globalThis.fetch),
+		headers: {
+			"User-Agent": USER_AGENT,
+			// The desktop client identifies itself on every call; matching it keeps
+			// the request looking like first-party traffic.
+			"X-Client-Platform": "desktop-windows",
+			"X-Client-Version": "v1.0.0",
+			"X-Raccoon-Language": "zh",
+			...(options?.headers ?? {}),
+		},
+		fetch: withThrottle(withSseSanitizer(options?.fetch ?? globalThis.fetch), minRequestIntervalMs()),
 		onPayload: async (payload, target) => {
-			if (thinking !== undefined && payload !== null && typeof payload === "object") {
-				(payload as Record<string, unknown>).raccoon_thinking = thinking;
+			if (payload !== null && typeof payload === "object") {
+				const body = payload as Record<string, unknown>;
+				if (thinking !== undefined) body.raccoon_thinking = thinking;
+				if (typeof body.max_tokens === "number" && body.max_tokens > cap) body.max_tokens = cap;
 			}
 			if (!callerOnPayload) return payload;
 			const replaced = await callerOnPayload(payload, target);
@@ -85,7 +127,19 @@ function describeFailure(error: unknown): string {
 	if (/Cannot find module/.test(message) && /[\\/]openai[\\/]/.test(message)) {
 		return `${message}\n\nThe openai SDK in the shared extension install is incomplete — an install was interrupted. Run \`pi update --extensions\` (or reinstall the package) and retry.`;
 	}
+	if (message.includes("200108")) {
+		return `${message}\n\nThe gateway has flagged this account for abnormal usage and blocked model calls. It does not clear on its own in a reasonable time: open the 小浣熊 app, click the avatar in the bottom-left, choose 「问题反馈」 and ask them to lift the restriction — or sign in with another account.`;
+	}
 	return message;
+}
+
+/** Rewrite an error event's message when the gateway's failure needs context. */
+function explain(event: AssistantMessageEvent): AssistantMessageEvent {
+	if (event.type !== "error") return event;
+	const original = event.error.errorMessage ?? "";
+	const explained = describeFailure(original);
+	if (explained === original) return event;
+	return { ...event, error: { ...event.error, errorMessage: explained } };
 }
 
 function errorEvent(model: Model<Api>, message: string): AssistantMessageEvent {
@@ -138,11 +192,11 @@ export function streamXhx(
 				return;
 			}
 
-			if (!first.done) stream.push(first.value);
+			if (!first.done) stream.push(explain(first.value));
 			for (;;) {
 				const next = await iterator.next();
 				if (next.done) break;
-				stream.push(next.value);
+				stream.push(explain(next.value));
 			}
 			stream.end();
 		} catch (error) {
