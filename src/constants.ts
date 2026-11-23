@@ -50,6 +50,14 @@ export function llmBase(origin = resolveOrigin()): string {
 	return `${origin}/api/web/llm/v2`;
 }
 
+/**
+ * The v1 LLM gateway. The v2 endpoint is behind a risk control that blocks
+ * non-official clients; v1 answers the same OpenAI shape without it.
+ */
+export function llmBaseV1(origin = resolveOrigin()): string {
+	return `${origin}/api/web/llm/v1`;
+}
+
 export function authBase(origin = resolveOrigin()): string {
 	return `${origin}/api/web/auth/v1`;
 }

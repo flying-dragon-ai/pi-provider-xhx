@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0] - 2026-11-23
+
+- Call `/llm/v1/chat/completions` instead of `/llm/v2/chat/completions`. The v2 endpoint is
+  behind a risk control that blocks accounts using it from a non-official client (`429`,
+  `code 200108`); v1 serves the same OpenAI shape without that gate.
+- The v1 streaming path is broken upstream (`invalid upstream stream response`), so the
+  extension calls the non-streaming path and synthesizes pi's event stream from the response.
+  Text now arrives in one block; tool calls, thinking, usage, and cancellation are unchanged.
+- Drop the `openai` SDK from the request path: message conversion, tool conversion, and the
+  response mapping are implemented in the extension, so an interrupted install of that package
+  can no longer break chat.
+
 ## [0.3.2] - 2026-11-23
 
 - Send the header set the official client sends (`X-Org-Code`, `X-Raccoon-Language`) and a

@@ -224,7 +224,7 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 				return;
 			}
 
-			if (path === "/api/web/llm/v2/chat/completions") {
+			if (path === "/api/web/llm/v1/chat/completions") {
 				if (!authorized) {
 					sendJson(res, 401, { code: 401, message: "unauthorized" });
 					return;
@@ -240,18 +240,17 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 					});
 					return;
 				}
-				if (options.rejectStreamOptions && parsed.stream_options !== undefined) {
-					sendJson(res, 400, {
-						error: { message: "invalid request: unknown field `stream_options`", type: "invalid_request_error" },
-					});
+				if (options.chatMode === "truncate") {
+					res.writeHead(200, { "Content-Type": "application/json" });
+					res.write('{"id":"chatcmpl-mock","choices":');
+					res.destroy();
 					return;
 				}
-
-				res.writeHead(200, {
-					"Content-Type": "text/event-stream",
-					"Cache-Control": "no-cache",
-					Connection: "keep-alive",
-				});
+				if (options.chatMode === "malformed") {
+					res.writeHead(200, { "Content-Type": "application/json" });
+					res.end("{not json at all");
+					return;
+				}
 
 				const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
 				const hasToolResult = messages.some((message) => (message as { role?: string }).role === "tool");
@@ -263,70 +262,35 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 						toolList[0]?.function?.name ??
 						"read_file")
 					: "";
-				const frames: string[] = [chunk({ role: "assistant", content: "" })];
-				if (wantsTool) {
-					frames.push(
-						chunk({
-							tool_calls: [
-								{ index: 0, id: "call_1", type: "function", function: { name: toolName, arguments: "" } },
-							],
-						}),
-						chunk({ tool_calls: [{ index: 0, function: { arguments: '{"path":' } }] }),
-						chunk({ tool_calls: [{ index: 0, function: { arguments: '"a.txt"}' } }] }),
-						chunk({}, { finish_reason: "tool_calls" }),
-					);
-				} else if (options.chatMode === "empty") {
-					frames.push(chunk({}, { finish_reason: "stop" }));
-				} else if (options.chatMode === "malformed") {
-					frames.push(
-						"data: {not json at all\n\n",
-						chunk({ content: "你好" }),
-						chunk({}, { finish_reason: "stop" }),
-					);
-				} else if (options.chatMode === "unicode") {
-					// Split a surrogate pair across two frames.
-					frames.push(
-						chunk({ content: "🙂".slice(0, 1) }),
-						chunk({ content: "🙂".slice(1) }),
-						chunk({ content: " done" }),
-						chunk({}, { finish_reason: "stop" }),
-					);
-				} else {
-					frames.push(
-						chunk({ reasoning_content: "先想一想" }),
-						chunk({ content: "你好" }),
-						chunk({ content: "，世界" }),
-						chunk({}, { finish_reason: "stop" }),
-					);
-				}
-				frames.push(
-					sseFrame({
-						id: "chatcmpl-mock",
-						object: "chat.completion.chunk",
-						model: "sn-glm-5-3-flash",
-						choices: [],
-						usage: {
-							prompt_tokens: 10,
-							completion_tokens: 5,
-							total_tokens: 15,
-							completion_tokens_details: { reasoning_tokens: 2 },
-						},
-					}),
-					"data: [DONE]\n\n",
-				);
 
-				const delay = options.frameDelayMs ?? 0;
-				for (const [index, frame] of frames.entries()) {
-					if (res.writableEnded || res.destroyed) return;
-					res.write(frame);
-					if (options.chatMode === "truncate" && index === 1) {
-						// Drop the connection mid-stream, like a gateway that dies.
-						res.destroy();
-						return;
-					}
-					if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+				const message: Record<string, unknown> = { role: "assistant", content: "" };
+				let finish = "stop";
+				if (wantsTool) {
+					message.tool_calls = [
+						{ id: "call_1", type: "function", function: { name: toolName, arguments: '{"path":"a.txt"}' } },
+					];
+					finish = "tool_calls";
+				} else if (options.chatMode === "empty") {
+					message.content = "";
+				} else if (options.chatMode === "unicode") {
+					message.content = "🙂 done";
+				} else {
+					message.reasoning_content = "先想一想";
+					message.content = "你好，世界";
 				}
-				res.end();
+
+				sendJson(res, 200, {
+					id: "chatcmpl-mock",
+					object: "chat.completion",
+					model: "sn-glm-5-3-flash",
+					choices: [{ index: 0, finish_reason: finish, message }],
+					usage: {
+						prompt_tokens: 10,
+						completion_tokens: 5,
+						total_tokens: 15,
+						completion_tokens_details: { reasoning_tokens: 2 },
+					},
+				});
 				return;
 			}
 

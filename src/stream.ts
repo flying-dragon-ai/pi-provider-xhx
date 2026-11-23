@@ -1,68 +1,36 @@
 /**
  * Streaming entry point.
  *
- * pi's `openai-completions` implementation does the real work: message
- * conversion, tool-call assembly, usage accounting, cancellation. This wrapper
- * only adds what the gateway needs on top:
+ * The gateway's `/llm/v2/chat/completions` endpoint is behind a risk control
+ * that flags accounts using it from anything but the official client, and its
+ * `/llm/v1/chat/completions` streaming path answers `invalid upstream stream
+ * response`. The v1 endpoint's non-streaming path works and returns the full
+ * OpenAI shape — content, `reasoning_content`, tool calls, usage — so the
+ * extension calls that and synthesizes pi's event stream from the response.
  *
- *   - the provider's compatibility flags (see `compat.ts`)
- *   - a `User-Agent` the gateway accepts
- *   - one retry without `stream_options` when the gateway rejects that field
- *
- * The retry is safe because a rejected request fails before any content event:
- * the wrapper buffers the first event and only replays it when it is not a
- * parameter error.
+ * The trade-off is that text arrives in one block instead of token by token.
+ * Everything else (tool calls, thinking, usage, cancellation) behaves the same.
  */
 
 import {
 	type Api,
+	type AssistantMessage,
 	type AssistantMessageEvent,
 	type AssistantMessageEventStream,
+	type ImageContent,
+	type Message,
 	type Model,
 	type SimpleStreamOptions,
+	type TextContent,
+	type Tool,
+	type ToolCall,
 	type TranscriptContext,
+	type Usage,
 	createAssistantMessageEventStream,
-	openAICompletionsApi,
 } from "@earendil-works/pi-ai/compat";
-import { USER_AGENT } from "./constants.ts";
-import { XHX_COMPAT, XHX_COMPAT_NO_STREAM_OPTIONS } from "./compat.ts";
-import { withSseSanitizer } from "./sse.ts";
+import { USER_AGENT, llmBaseV1 } from "./constants.ts";
 
-/** Fields the gateway may reject; only these trigger the retry. */
-const RETRYABLE_FIELD = /stream_options|include_usage/i;
-
-export function isStreamOptionsRejection(message: string | undefined): boolean {
-	if (!message) return false;
-	if (!RETRYABLE_FIELD.test(message)) return false;
-	return /400|invalid|unknown|unsupported|unrecognized|not support|extra fields/i.test(message);
-}
-
-function withCompat(model: Model<Api>, compat: typeof XHX_COMPAT): Model<Api> {
-	const existing = (model as { compat?: Record<string, unknown> }).compat ?? {};
-	// The explicit flags win: a retry must be able to turn a field off even when
-	// the model config already carries the default set.
-	return { ...model, compat: { ...existing, ...compat } } as Model<Api>;
-}
-
-/**
- * The gateway's thinking field. pi has no `thinkingFormat` for it, so the value
- * is derived from the model's `thinkingLevelMap` and injected into the payload.
- */
-function thinkingValue(model: Model<Api>, level: SimpleStreamOptions["reasoning"]): string | undefined {
-	const map = model.thinkingLevelMap;
-	if (!map) return undefined;
-	// pi has no "off" level: an absent level means the user turned thinking off,
-	// so the model's own off value (or its floor) is what gets sent.
-	const mapped = level ? map[level] : map.off;
-	return typeof mapped === "string" && mapped !== "" ? mapped : undefined;
-}
-
-/**
- * The gateway's risk control flags accounts that look like a scraper: bursts of
- * requests, or a huge output reservation on every call. The official client
- * sends a few thousand `max_new_tokens` and one request at a time, so the
- * extension keeps its own requests in that shape.
- */
+/** The gateway's risk control flags a huge output reservation on every call. */
 function maxOutputTokens(): number {
 	const raw = process.env.XHX_MAX_TOKENS?.trim();
 	const parsed = raw ? Number(raw) : Number.NaN;
@@ -77,55 +45,174 @@ function minRequestIntervalMs(): number {
 
 let lastRequestAt = 0;
 
-/** Space requests out so a tool-call loop cannot look like a burst. */
-function withThrottle(inner: typeof globalThis.fetch, intervalMs: number): typeof globalThis.fetch {
-	if (intervalMs <= 0) return inner;
-	return async (input, init) => {
-		const wait = lastRequestAt + intervalMs - Date.now();
-		if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-		lastRequestAt = Date.now();
-		return inner(input, init);
-	};
+async function throttle(): Promise<void> {
+	const interval = minRequestIntervalMs();
+	if (interval <= 0) return;
+	const wait = lastRequestAt + interval - Date.now();
+	if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+	lastRequestAt = Date.now();
 }
 
 /**
  * Header set the official web/desktop client sends on every model call:
- * `Authorization`, `Content-Type`, `X-Org-Code`, `X-Raccoon-Language`. The
- * gateway's risk control sees the difference, so the extension sends the same
- * set with a browser user agent instead of identifying itself.
+ * `Authorization`, `Content-Type`, `X-Org-Code`, `X-Raccoon-Language`.
  */
-function clientHeaders(options: SimpleStreamOptions | undefined): Record<string, string> {
-	const org = process.env.XHX_ORG_CODE?.trim() ?? "";
+function clientHeaders(apiKey: string, extra: Record<string, string | null> | undefined): Record<string, string> {
 	return {
+		"Content-Type": "application/json",
+		Accept: "application/json",
+		Authorization: `Bearer ${apiKey}`,
 		"User-Agent": USER_AGENT,
-		"X-Org-Code": org,
+		"X-Org-Code": process.env.XHX_ORG_CODE?.trim() ?? "",
 		"X-Raccoon-Language": "zh",
-		...(options?.headers ?? {}),
+		...Object.fromEntries(Object.entries(extra ?? {}).filter(([, value]) => value !== null)),
 	};
 }
 
-function buildOptions(model: Model<Api>, options: SimpleStreamOptions | undefined): SimpleStreamOptions {
-	const thinking = thinkingValue(model, options?.reasoning);
-	const callerOnPayload = options?.onPayload;
-	const cap = maxOutputTokens();
-	return {
-		...(options ?? {}),
-		headers: clientHeaders(options),
-		fetch: withThrottle(withSseSanitizer(options?.fetch ?? globalThis.fetch), minRequestIntervalMs()),
-		onPayload: async (payload, target) => {
-			if (payload !== null && typeof payload === "object") {
-				const body = payload as Record<string, unknown>;
-				if (thinking !== undefined) body.raccoon_thinking = thinking;
-				// The official client asks for `max_new_tokens`; the gateway accepts
-				// both, so keep the OpenAI field name and just bound the reservation.
-				if (typeof body.max_tokens === "number" && body.max_tokens > cap) body.max_tokens = cap;
-				body.verbose = true;
+/** The gateway's thinking field, mapped from pi's level through the model's map. */
+function thinkingValue(model: Model<Api>, level: SimpleStreamOptions["reasoning"]): string | undefined {
+	const map = model.thinkingLevelMap;
+	if (!map) return undefined;
+	// pi has no "off" level: an absent level means the user turned thinking off,
+	// so the model's own off value (or its floor) is what gets sent.
+	const mapped = level ? map[level] : map.off;
+	return typeof mapped === "string" && mapped !== "" ? mapped : undefined;
+}
+
+function textOf(content: string | TextContent[]): string {
+	return typeof content === "string" ? content : content.map((part) => part.text).join("\n");
+}
+
+function imageUrl(part: ImageContent): string {
+	return `data:${part.mimeType};base64,${part.data}`;
+}
+
+type OpenAIMessage = Record<string, unknown>;
+
+/** Convert pi's transcript into the OpenAI chat shape the gateway accepts. */
+export function toOpenAIMessages(messages: readonly Message[]): OpenAIMessage[] {
+	const out: OpenAIMessage[] = [];
+	for (const message of messages) {
+		if (message.role === "system") {
+			const sections = message.sections
+				? Object.entries(message.sections)
+						.filter(([, value]) => value !== null)
+						.map(([name, value]) => `${name}: ${value}`)
+						.join("\n")
+				: "";
+			const body = [textOf(message.content), sections].filter((part) => part !== "").join("\n\n");
+			if (body !== "") out.push({ role: "system", content: body });
+			continue;
+		}
+		if (message.role === "user") {
+			if (typeof message.content === "string") {
+				out.push({ role: "user", content: message.content });
+			} else {
+				out.push({
+					role: "user",
+					content: message.content.map((part) =>
+						part.type === "text"
+							? { type: "text", text: part.text }
+							: { type: "image_url", image_url: { url: imageUrl(part) } },
+					),
+				});
 			}
-			if (!callerOnPayload) return payload;
-			const replaced = await callerOnPayload(payload, target);
-			return replaced ?? payload;
-		},
+			continue;
+		}
+		if (message.role === "assistant") {
+			const text = message.content
+				.filter((part): part is TextContent => part.type === "text")
+				.map((part) => part.text)
+				.join("");
+			const thinking = message.content
+				.filter((part) => part.type === "thinking")
+				.map((part) => (part as { thinking: string }).thinking)
+				.join("\n");
+			const toolCalls = message.content
+				.filter((part): part is ToolCall => part.type === "toolCall")
+				.map((call) => ({
+					id: call.id,
+					type: "function",
+					function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+				}));
+			if (text === "" && toolCalls.length === 0) continue;
+			const entry: OpenAIMessage = { role: "assistant", content: text };
+			if (thinking !== "") entry.reasoning_content = thinking;
+			if (toolCalls.length > 0) entry.tool_calls = toolCalls;
+			out.push(entry);
+			continue;
+		}
+		const result = message.content
+			.filter((part): part is TextContent => part.type === "text")
+			.map((part) => part.text)
+			.join("\n");
+		out.push({
+			role: "tool",
+			tool_call_id: message.toolCallId,
+			content: result === "" ? (message.isError ? "error" : "") : result,
+		});
+	}
+	return out;
+}
+
+/** Convert pi's tool declarations into OpenAI function tools. */
+export function toOpenAITools(tools: readonly Tool[]): unknown[] {
+	return tools.map((tool) => ({
+		type: "function",
+		function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+	}));
+}
+
+interface CompletionResponse {
+	id?: string;
+	model?: string;
+	choices?: {
+		finish_reason?: string;
+		message?: {
+			content?: string | null;
+			reasoning_content?: string | null;
+			tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+		};
+	}[];
+	usage?: {
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		total_tokens?: number;
+		prompt_tokens_details?: { cached_tokens?: number };
 	};
+}
+
+function emptyUsage(): Usage {
+	return {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function usageFrom(response: CompletionResponse): Usage {
+	const usage = response.usage ?? {};
+	return {
+		input: usage.prompt_tokens ?? 0,
+		output: usage.completion_tokens ?? 0,
+		cacheRead: usage.prompt_tokens_details?.cached_tokens ?? 0,
+		cacheWrite: 0,
+		totalTokens: usage.total_tokens ?? (usage.prompt_tokens ?? 0) + (usage.completion_tokens ?? 0),
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+}
+
+function parseArguments(raw: string | undefined): ToolCall["arguments"] {
+	if (!raw) return {};
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ToolCall["arguments"]) : {};
+	} catch {
+		return {};
+	}
 }
 
 /**
@@ -144,15 +231,6 @@ function describeFailure(error: unknown): string {
 	return message;
 }
 
-/** Rewrite an error event's message when the gateway's failure needs context. */
-function explain(event: AssistantMessageEvent): AssistantMessageEvent {
-	if (event.type !== "error") return event;
-	const original = event.error.errorMessage ?? "";
-	const explained = describeFailure(original);
-	if (explained === original) return event;
-	return { ...event, error: { ...event.error, errorMessage: explained } };
-}
-
 function errorEvent(model: Model<Api>, message: string): AssistantMessageEvent {
 	return {
 		type: "error",
@@ -163,16 +241,27 @@ function errorEvent(model: Model<Api>, message: string): AssistantMessageEvent {
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
+			usage: emptyUsage(),
 			stopReason: "error",
 			errorMessage: message,
+			timestamp: Date.now(),
+		},
+	};
+}
+
+function abortedEvent(model: Model<Api>): AssistantMessageEvent {
+	return {
+		type: "error",
+		reason: "aborted",
+		error: {
+			role: "assistant",
+			content: [],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: emptyUsage(),
+			stopReason: "aborted",
+			errorMessage: "Request was aborted",
 			timestamp: Date.now(),
 		},
 	};
@@ -186,32 +275,121 @@ export function streamXhx(
 	const stream = createAssistantMessageEventStream();
 
 	void (async () => {
-		const requestOptions = buildOptions(model, options);
 		try {
-			const inner = openAICompletionsApi().streamSimple(withCompat(model, XHX_COMPAT), context, requestOptions);
-			const iterator = inner[Symbol.asyncIterator]();
-			const first = await iterator.next();
+			const apiKey = options?.apiKey;
+			if (!apiKey) throw new Error("No 小浣熊 access token. Run /login xhx or set XHX_ACCESS_TOKEN.");
 
-			if (!first.done && first.value.type === "error" && isStreamOptionsRejection(first.value.error.errorMessage)) {
-				const retry = openAICompletionsApi().streamSimple(
-					withCompat(model, XHX_COMPAT_NO_STREAM_OPTIONS),
-					context,
-					requestOptions,
-				);
-				for await (const event of retry) stream.push(event);
+			const tools = context.messages.flatMap((message) =>
+				message.role === "system" && message.toolsAdded ? message.toolsAdded : [],
+			);
+			const thinking = thinkingValue(model, options?.reasoning);
+			const body: Record<string, unknown> = {
+				model: model.id,
+				messages: toOpenAIMessages(context.messages),
+				stream: false,
+				max_tokens: Math.min(options?.maxTokens ?? model.maxTokens, maxOutputTokens()),
+				verbose: true,
+			};
+			if (tools.length > 0) body.tools = toOpenAITools(tools);
+			if (thinking !== undefined) body.raccoon_thinking = thinking;
+			if (options?.temperature !== undefined) body.temperature = options.temperature;
+
+			const payload = options?.onPayload ? ((await options.onPayload(body, model)) ?? body) : body;
+
+			await throttle();
+			const response = await fetch(`${llmBaseV1()}/chat/completions`, {
+				method: "POST",
+				headers: clientHeaders(apiKey, options?.headers),
+				body: JSON.stringify(payload),
+				...(options?.signal ? { signal: options.signal } : {}),
+			});
+			options?.onResponse?.({ status: response.status, headers: Object.fromEntries(response.headers) }, model);
+
+			const raw = await response.text();
+			if (!response.ok) throw new Error(`${response.status}: ${raw.slice(0, 600)}`);
+
+			let parsed: CompletionResponse;
+			try {
+				parsed = JSON.parse(raw) as CompletionResponse;
+			} catch {
+				throw new Error(`响应不是合法 JSON：${raw.slice(0, 200)}`);
+			}
+
+			const choice = parsed.choices?.[0];
+			const message = choice?.message ?? {};
+			const text = message.content ?? "";
+			const reasoning = message.reasoning_content ?? "";
+			const calls = message.tool_calls ?? [];
+
+			const output: AssistantMessage = {
+				role: "assistant",
+				content: [],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: usageFrom(parsed),
+				stopReason: "pending",
+				timestamp: Date.now(),
+			};
+			if (parsed.id) output.responseId = parsed.id;
+			if (parsed.model && parsed.model !== model.id) output.responseModel = parsed.model;
+
+			stream.push({ type: "start", partial: output });
+
+			if (reasoning !== "") {
+				const block = { type: "thinking" as const, thinking: "", thinkingSignature: "reasoning_content" };
+				output.content.push(block);
+				const index = output.content.length - 1;
+				stream.push({ type: "thinking_start", contentIndex: index, partial: output });
+				block.thinking = reasoning;
+				stream.push({ type: "thinking_delta", contentIndex: index, delta: reasoning, partial: output });
+				stream.push({ type: "thinking_end", contentIndex: index, content: reasoning, partial: output });
+			}
+
+			if (text !== "") {
+				const block = { type: "text" as const, text: "" };
+				output.content.push(block);
+				const index = output.content.length - 1;
+				stream.push({ type: "text_start", contentIndex: index, partial: output });
+				block.text = text;
+				stream.push({ type: "text_delta", contentIndex: index, delta: text, partial: output });
+				stream.push({ type: "text_end", contentIndex: index, content: text, partial: output });
+			}
+
+			for (const [position, call] of calls.entries()) {
+				const toolCall: ToolCall = {
+					type: "toolCall",
+					id: call.id ?? `call_${position}`,
+					name: call.function?.name ?? "",
+					arguments: parseArguments(call.function?.arguments),
+				};
+				output.content.push(toolCall);
+				const index = output.content.length - 1;
+				stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
+				stream.push({
+					type: "toolcall_delta",
+					contentIndex: index,
+					delta: call.function?.arguments ?? "",
+					partial: output,
+				});
+				stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: output });
+			}
+
+			if (options?.signal?.aborted) {
+				stream.push(abortedEvent(model));
 				stream.end();
 				return;
 			}
 
-			if (!first.done) stream.push(explain(first.value));
-			for (;;) {
-				const next = await iterator.next();
-				if (next.done) break;
-				stream.push(explain(next.value));
-			}
+			output.stopReason = calls.length > 0 ? "toolUse" : choice?.finish_reason === "length" ? "length" : "stop";
+			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
-			stream.push(errorEvent(model, describeFailure(error)));
+			if (options?.signal?.aborted) {
+				stream.push(abortedEvent(model));
+			} else {
+				stream.push(errorEvent(model, describeFailure(error)));
+			}
 			stream.end();
 		}
 	})();

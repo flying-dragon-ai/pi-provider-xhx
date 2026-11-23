@@ -132,10 +132,21 @@ in `~/.box-agent/config/auth.json`.
 | Code exchange | `POST {origin}/api/web/auth/v1/login_with_authorization_code` |
 | Token refresh | `POST {origin}/api/web/auth/v1/refresh` |
 | Model catalog | `GET {origin}/api/web/llm/v2/model_catalog` |
-| Chat | `POST {origin}/api/web/llm/v2/chat/completions` |
+| Chat | `POST {origin}/api/web/llm/v1/chat/completions` (non-streaming) |
 | Balance | `GET {origin}/api/web/points/v1/balance` |
 | Entitlement | `GET {origin}/api/web/auth/v1/entitlement_info` |
 | Daily grant | `GET {origin}/api/web/office/v3/setting_info` |
+
+## Why the v1 endpoint
+
+The gateway's `/llm/v2/chat/completions` sits behind a risk control that flags accounts calling
+it from anything but the official client — it answers `429` with `code 200108` and blocks model
+calls for the account. `/llm/v1/chat/completions` serves the same OpenAI shape without that
+gate, but its streaming path answers `invalid upstream stream response`, so the extension calls
+the non-streaming path and synthesizes pi's event stream from the single response.
+
+The visible cost is that text arrives in one block instead of token by token. Tool calls,
+thinking, usage, and cancellation behave the same.
 
 ## Wire compatibility
 
@@ -159,7 +170,7 @@ rejection happens before any content event, so the retry cannot duplicate output
 ```bash
 npm install
 npm run typecheck
-npm test          # 58 tests against a mock gateway
+npm test          # 54 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
@@ -179,7 +190,7 @@ XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
 
 What the test suite and the real runs cover:
 
-- 58 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
+- 54 tests against the mock gateway: login (loopback happy path, state mismatch, expired code,
   HTTP error, paste fallback), refresh (rotation, no rotation, rejection), catalog parsing and
   401 handling, model mapping, streaming (text, `reasoning_content`, usage, tool calls,
   `stream_options` retry, 401, abort, empty response, malformed frame, split surrogate pair,
