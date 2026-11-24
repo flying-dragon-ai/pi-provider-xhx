@@ -9,7 +9,7 @@
 import { startMockUpstream } from "../mock-upstream.ts";
 
 const port = Number(process.argv[2] ?? 18080);
-const mock = await startMockUpstream({ port, frameDelayMs: 5 });
+const mock = await startMockUpstream({ port });
 let seen = 0;
 setInterval(() => {
 	for (; seen < mock.requests.length; seen += 1) {

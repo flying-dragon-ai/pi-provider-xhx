@@ -30,7 +30,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asNumber(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
-	if (typeof value === "string") {
+	if (typeof value === "string" && value.trim() !== "") {
 		const parsed = Number(value);
 		if (Number.isFinite(parsed)) return parsed;
 	}
@@ -43,14 +43,18 @@ async function request(url: string, accessToken: string, headers: Record<string,
 		headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}`, ...headers },
 	});
 	const raw = await response.text();
-	let body: Envelope = {};
+	let parsed: unknown;
 	try {
-		body = asRecord(JSON.parse(raw)) as Envelope;
+		parsed = JSON.parse(raw);
 	} catch {
-		body = {};
+		if (response.ok) throw new Error(`上游响应不是合法 JSON：${raw.slice(0, 160)}`);
 	}
+	const body = asRecord(parsed) as Envelope;
 	if (!response.ok) {
 		throw new Error(`HTTP ${response.status} ${body.message ?? body.msg ?? raw.slice(0, 160)}`);
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("上游响应不是 JSON 对象");
 	}
 	if (typeof body.code === "number" && body.code !== 0) {
 		throw new Error(`code=${body.code} ${body.message ?? body.msg ?? ""}`.trim());

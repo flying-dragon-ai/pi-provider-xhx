@@ -40,8 +40,8 @@ export const DEFAULT_CONTEXT_WINDOW = 128_000;
 export const DEFAULT_MAX_TOKENS = 8_192;
 
 /** `XHX_ORIGIN` points the extension at a mirror or a local mock. */
-export function resolveOrigin(): string {
-	const raw = process.env.XHX_ORIGIN?.trim();
+export function resolveOrigin(env?: Record<string, string>): string {
+	const raw = (env?.XHX_ORIGIN ?? process.env.XHX_ORIGIN)?.trim();
 	if (!raw) return DEFAULT_ORIGIN;
 	return raw.replace(/\/+$/, "");
 }

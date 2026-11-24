@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loginXhx, parseCallbackInput, refreshXhx } from "../src/auth.ts";
+import { jwtExpiry } from "../src/jwt.ts";
 import { startMockUpstream, type MockUpstream } from "./mock-upstream.ts";
 
 let mock: MockUpstream;
@@ -116,15 +117,24 @@ describe("loginXhx loopback flow", () => {
 		expect(exchange?.body).toBe(JSON.stringify({ authorization_code: "good" }));
 	});
 
-	it("rejects a callback whose state does not match", async () => {
+	it("ignores a foreign state and waits for the real callback", async () => {
 		const seen: Seen = { prompts: 0 };
 		const promise = loginXhx(callbacks(seen) as never);
+		const settled = promise.then(
+			(value) => ({ value }),
+			(error: unknown) => ({ error }),
+		);
 		const url = await waitForAuthorizeUrl(seen);
 
 		const redirect = url.searchParams.get("redirect") ?? "";
-		const expectation = expect(promise).rejects.toThrow(/state 与本次登录不匹配/);
-		await fetch(`${redirect}?code=good&state=${"0".repeat(64)}`);
-		await expectation;
+		const state = url.searchParams.get("state") ?? "";
+		const rejected = await fetch(`${redirect}?code=foreign&state=${"0".repeat(64)}`);
+		expect(rejected.status).toBe(400);
+		await fetch(`${redirect}?code=good&state=${state}`);
+
+		const result = await settled;
+		expect(result).toHaveProperty("value.access", mock.validAccessToken());
+		expect(seen.prompts).toBe(0);
 	});
 
 	it("reports an expired authorization code", async () => {
@@ -157,6 +167,29 @@ describe("loginXhx loopback flow", () => {
 		const credentials = await loginXhx(callbacks(seen, "good") as never);
 		expect(seen.prompts).toBe(1);
 		expect(credentials.access).toBe(mock.validAccessToken());
+	});
+	it("honors a signal that is already aborted", async () => {
+		process.env.XHX_LOGIN_TIMEOUT_MS = "30";
+		const controller = new AbortController();
+		controller.abort();
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx({ ...callbacks(seen, "good"), signal: controller.signal } as never);
+		await expect(promise).rejects.toThrow(/登录已取消/);
+		expect(seen.prompts).toBe(0);
+	});
+
+	it("never schedules credential use beyond a short-lived JWT expiry", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ tokenTtlSeconds: 30 });
+		process.env.XHX_ORIGIN = mock.origin;
+		const seen: Seen = { prompts: 0 };
+		const promise = loginXhx(callbacks(seen) as never);
+		const url = await waitForAuthorizeUrl(seen);
+		const redirect = url.searchParams.get("redirect") ?? "";
+		const state = url.searchParams.get("state") ?? "";
+		await fetch(`${redirect}?code=good&state=${state}`);
+		const credentials = await promise;
+		expect(credentials.expires).toBeLessThanOrEqual(jwtExpiry(credentials.access));
 	});
 });
 

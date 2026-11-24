@@ -12,6 +12,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	process.env.XHX_MIN_INTERVAL_MS = "0";
 	delete process.env.XHX_ORIGIN;
 	await mock.close();
 });
@@ -266,5 +267,172 @@ describe("streamXhx", () => {
 		expect(
 			content.some((part) => part.type === "image_url" && part.image_url?.url.startsWith("data:image/png;base64,")),
 		).toBe(true);
+	});
+
+	it("reports an upstream business error returned with HTTP 200", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatResponse: { code: 200108, message: "blocked by gateway" } });
+		process.env.XHX_ORIGIN = mock.origin;
+		const { types, final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(types.at(-1)).toBe("error");
+		expect(final?.errorMessage).toContain("200108");
+		expect(final?.errorMessage).toContain("blocked by gateway");
+	});
+
+	it("rejects a successful response without choices", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatResponse: { id: "chatcmpl-empty", choices: [] } });
+		process.env.XHX_ORIGIN = mock.origin;
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.stopReason).toBe("error");
+		expect(final?.errorMessage).toContain("choices");
+	});
+
+	it("maps content filtering to an error instead of a successful stop", async () => {
+		await mock.close();
+		mock = await startMockUpstream({
+			chatResponse: {
+				choices: [{ finish_reason: "content_filter", message: { role: "assistant", content: "filtered" } }],
+			},
+		});
+		process.env.XHX_ORIGIN = mock.origin;
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.stopReason).toBe("error");
+		expect(final?.errorMessage).toContain("content_filter");
+	});
+
+	it("preserves malformed tool arguments for tool validation", async () => {
+		await mock.close();
+		mock = await startMockUpstream({
+			chatResponse: {
+				choices: [{
+					finish_reason: "tool_calls",
+					message: {
+						role: "assistant",
+						content: null,
+						tool_calls: [{ id: "call_bad", type: "function", function: { name: "read_file", arguments: "{\"path\":" } }],
+					},
+				}],
+			},
+		});
+		process.env.XHX_ORIGIN = mock.origin;
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.stopReason).toBe("toolUse");
+		expect(final?.content[0]).toMatchObject({
+			arguments: {},
+			argumentsError: expect.stringContaining("Received arguments"),
+		});
+	});
+
+	it("separates cached tokens and records reasoning usage", async () => {
+		await mock.close();
+		mock = await startMockUpstream({
+			chatResponse: {
+				choices: [{ finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
+				usage: {
+					prompt_tokens: 100,
+					completion_tokens: 20,
+					total_tokens: 120,
+					prompt_tokens_details: { cached_tokens: 40, cache_write_tokens: 10 },
+					completion_tokens_details: { reasoning_tokens: 5 },
+				},
+			},
+		});
+		process.env.XHX_ORIGIN = mock.origin;
+		const { final } = await collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() }));
+		expect(final?.usage).toMatchObject({
+			input: 50,
+			output: 20,
+			cacheRead: 40,
+			cacheWrite: 10,
+			reasoning: 5,
+			totalTokens: 120,
+		});
+	});
+
+	it("serializes concurrent requests through the minimum interval", async () => {
+		process.env.XHX_MIN_INTERVAL_MS = "80";
+		await Promise.all(Array.from({ length: 3 }, () =>
+			collect(streamXhx(model(), userContext, { apiKey: mock.validAccessToken() })),
+		));
+		const calls = mock.requests.filter((request) => request.path.endsWith("/chat/completions"));
+		expect(calls).toHaveLength(3);
+		for (let index = 1; index < calls.length; index += 1) {
+			const gap = (calls[index]?.receivedAt ?? 0) - (calls[index - 1]?.receivedAt ?? 0);
+			expect(gap).toBeGreaterThanOrEqual(65);
+		}
+	});
+
+	it("honors injected fetch, callbacks, headers, tool choice and sampling parameters", async () => {
+		const context = normalizeContext({
+			messages: [{ role: "user", content: "hello", timestamp: 0 }],
+			tools: [{ name: "read_file", description: "Read", parameters: { type: "object" } }],
+		});
+		let fetchCalls = 0;
+		let responseCallbackFinished = false;
+		const injectedFetch: typeof fetch = async (input, init) => {
+			fetchCalls += 1;
+			return fetch(input, init);
+		};
+		const { final } = await collect(streamXhx(
+			model({ headers: { "X-Model-Header": "present" }, samplingParams: { top_p: 0.7 } }),
+			context,
+			{
+				apiKey: mock.validAccessToken(),
+				fetch: injectedFetch,
+				env: { XHX_ORIGIN: mock.origin, XHX_ORG_CODE: "org-from-options" },
+				toolChoice: "none",
+				samplingParams: { top_k: 10 },
+				onResponse: async () => {
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					responseCallbackFinished = true;
+				},
+			},
+		));
+		expect(final?.stopReason).toBe("stop");
+		expect(fetchCalls).toBe(1);
+		expect(responseCallbackFinished).toBe(true);
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as Record<string, unknown>;
+		expect(body.tool_choice).toBe("none");
+		expect(body.top_p).toBe(0.7);
+		expect(body.top_k).toBe(10);
+		expect(request?.headers["x-model-header"]).toBe("present");
+		expect(request?.headers["x-org-code"]).toBe("org-from-options");
+	});
+
+	it("honors the request timeout", async () => {
+		await mock.close();
+		mock = await startMockUpstream({ chatDelayMs: 100 });
+		process.env.XHX_ORIGIN = mock.origin;
+		const { final } = await collect(streamXhx(model(), userContext, {
+			apiKey: mock.validAccessToken(),
+			timeoutMs: 10,
+		}));
+		expect(final?.stopReason).toBe("error");
+	});
+
+	it("collapses system updates and removes deleted tools", async () => {
+		const context = normalizeContext({
+			systemPrompt: "base prompt",
+			tools: [
+				{ name: "keep", description: "Keep", parameters: { type: "object" } },
+				{ name: "remove", description: "Remove", parameters: { type: "object" } },
+			],
+			messages: [
+				{ role: "system", content: "later instruction", toolsRemoved: [{ name: "remove" }], timestamp: 0 },
+				{ role: "user", content: "hello", timestamp: 0 },
+			],
+		});
+		await collect(streamXhx(model(), context, { apiKey: mock.validAccessToken() }));
+		const request = mock.requests.find((r) => r.path.endsWith("/chat/completions"));
+		const body = JSON.parse(request?.body ?? "{}") as {
+			messages: { role: string; content?: unknown }[];
+			tools?: { function: { name: string } }[];
+		};
+		expect(body.messages.filter((message) => message.role === "system")).toEqual([
+			{ role: "system", content: "base prompt\n\nlater instruction" },
+		]);
+		expect(body.tools?.map((tool) => tool.function.name)).toEqual(["keep"]);
 	});
 });

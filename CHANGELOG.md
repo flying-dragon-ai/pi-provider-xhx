@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.1] - 2026-11-24
+
+- Reject HTTP 200 business errors, missing choices, malformed completion payloads, and error
+  `finish_reason` values instead of returning a successful empty answer.
+- Serialize concurrent requests through the minimum-interval limiter and make limiter waits
+  abortable. Honor injected fetch implementations, request timeouts, provider environment
+  overrides, model headers, `toolChoice`, sampling parameters, and asynchronous response hooks.
+- Fold system-message and tool updates before each request, preserve malformed tool arguments
+  for validation, and account for cache-read/cache-write/reasoning tokens correctly.
+- Validate OAuth callback state before reporting success and keep listening for the real
+  callback after a mismatch. Clean up callback waiters on timeout/cancellation, honor an
+  already-aborted login, and never extend short-lived credentials beyond JWT expiry.
+- Reject malformed successful account responses and avoid coercing blank numeric fields or
+  sub-unit catalog limits to zero.
+- Require `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` 1.5.2 or newer so
+  every runtime API used by the extension is covered by the declared peer range.
+- Remove the unused SSE/`stream_options` implementation left over from the streaming adapter,
+  tighten compiler checks, synchronize the README, and expand the suite from 54 to 68 tests.
+
 ## [0.4.0] - 2026-11-23
 
 - Call `/llm/v1/chat/completions` instead of `/llm/v2/chat/completions`. The v2 endpoint is

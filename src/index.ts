@@ -1,10 +1,9 @@
 /**
  * pi-provider-xhx — 小浣熊 (SenseTime Raccoon) provider for pi.
  *
- * Registers one provider, `xhx`, that speaks the gateway's OpenAI-compatible
  * Chat Completions surface directly. No local proxy process is involved: the
  * extension holds the OAuth credentials, refreshes them through pi's auth
- * layer, and streams through pi's own `openai-completions` implementation.
+ * layer, and converts each non-streaming gateway response into pi's event stream.
  */
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
@@ -18,11 +17,13 @@ import { streamXhx } from "./stream.ts";
 
 function tokenFromCredential(context: RefreshModelsContext): string | undefined {
 	const credential = context.credential;
-	if (credential?.type === "oauth" && typeof credential.access === "string" && credential.access !== "") {
-		return credential.access;
+	if (credential?.type === "oauth" && typeof credential.access === "string") {
+		const token = credential.access.trim();
+		if (token !== "") return token;
 	}
-	if (credential?.type === "api_key" && typeof credential.key === "string" && credential.key !== "") {
-		return credential.key;
+	if (credential?.type === "api_key" && typeof credential.key === "string") {
+		const token = credential.key.trim();
+		if (token !== "") return token;
 	}
 	const env = process.env.XHX_ACCESS_TOKEN?.trim();
 	return env && env !== "" ? env : undefined;

@@ -49,12 +49,10 @@ function asString(value: unknown): string {
 }
 
 function asNumber(value: unknown): number | undefined {
-	if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.trunc(value);
-	if (typeof value === "string") {
-		const parsed = Number(value);
-		if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
-	}
-	return undefined;
+	const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
+	if (!Number.isFinite(parsed)) return undefined;
+	const integer = Math.trunc(parsed);
+	return integer > 0 ? integer : undefined;
 }
 
 function truncate(value: string, max: number): string {

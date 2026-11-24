@@ -6,7 +6,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { claimDailyGrant, fetchBalance } from "./api.ts";
-import { PROVIDER_ID, PROVIDER_NAME, llmBase, resolveOrigin } from "./constants.ts";
+import { PROVIDER_ID, PROVIDER_NAME, llmBase, llmBaseV1, resolveOrigin } from "./constants.ts";
 import { tokenTail } from "./jwt.ts";
 
 async function accessToken(ctx: ExtensionCommandContext): Promise<string | undefined> {
@@ -40,7 +40,8 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const lines = [
 				`provider: ${PROVIDER_ID}`,
 				`origin:   ${resolveOrigin()}`,
-				`endpoint: ${llmBase()}`,
+				`chat:     ${llmBaseV1()}`,
+				`catalog:  ${llmBase()}`,
 				`auth:     ${status.configured ? (status.source ?? "configured") : "未登录"}`,
 				`token:    ${token ? `…${tokenTail(token)}` : "—"}`,
 				`models:   ${models.length}`,

@@ -12,8 +12,7 @@
  *
  * The gateway is a proxy in front of several vendors' models and only
  * guarantees the classic Chat Completions surface, so every one of those is
- * turned off. `stream_options` is kept because usage accounting depends on it;
- * `stream.ts` retries without it if the gateway rejects the field.
+ * turned off. The active non-streaming adapter does not send `stream_options`.
  */
 
 import type { OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
@@ -22,7 +21,7 @@ export const XHX_COMPAT: OpenAICompletionsCompat = {
 	supportsStore: false,
 	supportsDeveloperRole: false,
 	supportsReasoningEffort: false,
-	supportsUsageInStreaming: true,
+	supportsUsageInStreaming: false,
 	supportsFinishReason: true,
 	maxTokensField: "max_tokens",
 	supportsStrictMode: false,
@@ -37,10 +36,4 @@ export const XHX_COMPAT: OpenAICompletionsCompat = {
 	requiresToolsWithToolHistory: false,
 	requiresThinkingAsText: false,
 	requiresReasoningContentOnAssistantMessages: false,
-};
-
-/** Same flags with `stream_options` dropped, for the retry path. */
-export const XHX_COMPAT_NO_STREAM_OPTIONS: OpenAICompletionsCompat = {
-	...XHX_COMPAT,
-	supportsUsageInStreaming: false,
 };

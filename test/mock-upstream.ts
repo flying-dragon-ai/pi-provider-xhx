@@ -1,10 +1,9 @@
 /**
  * A stand-in for the 小浣熊 gateway.
  *
- * It implements the four endpoints the extension touches, with the response
+ * It implements the endpoints the extension touches, with the response
  * shapes the Go proxy documents: the `{code,message,data}` envelope, the
- * `categories[].models[]` catalog, and OpenAI-shaped SSE frames that carry
- * `reasoning_content`, tool calls, and a trailing usage chunk.
+ * `categories[].models[]` catalog, and non-streaming OpenAI completions with reasoning, tool calls, and usage.
  *
  * Every request is recorded so tests can assert on the exact wire payload.
  */
@@ -15,23 +14,24 @@ import type { AddressInfo } from "node:net";
 export interface RecordedRequest {
 	method: string;
 	path: string;
+	receivedAt: number;
 	headers: Record<string, string | string[] | undefined>;
 	body: string;
 }
 
 export interface MockOptions {
-	/** Reject `stream_options` with a 400, like a strict gateway would. */
-	rejectStreamOptions?: boolean;
 	/** Rotate the refresh token on `/refresh`. */
 	rotateRefreshToken?: boolean;
-	/** Delay between SSE frames, in ms. */
-	frameDelayMs?: number;
 	/** Catalog payload override. */
 	catalog?: unknown;
 	/** Access token lifetime in seconds. */
 	tokenTtlSeconds?: number;
 	/** Shape of the chat stream: normal, empty, malformed, unicode, or truncate. */
 	chatMode?: "normal" | "empty" | "malformed" | "unicode" | "truncate" | "blocked";
+	/** Return this body instead of the normal successful completion. */
+	chatResponse?: unknown;
+	/** Delay a successful or overridden completion response. */
+	chatDelayMs?: number;
 	/** Fixed port for manual end-to-end runs; 0 picks a free one. */
 	port?: number;
 }
@@ -112,18 +112,6 @@ const DEFAULT_CATALOG = {
 	},
 };
 
-function sseFrame(payload: unknown): string {
-	return `data: ${JSON.stringify(payload)}\n\n`;
-}
-
-function chunk(delta: Record<string, unknown>, extra: Record<string, unknown> = {}): string {
-	return sseFrame({
-		id: "chatcmpl-mock",
-		object: "chat.completion.chunk",
-		model: "sn-glm-5-3-flash",
-		choices: [{ index: 0, delta, ...extra }],
-	});
-}
 
 export async function startMockUpstream(options: MockOptions = {}): Promise<MockUpstream> {
 	const requests: RecordedRequest[] = [];
@@ -136,7 +124,7 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 		void (async () => {
 			const body = await readBody(req);
 			const path = (req.url ?? "/").split("?")[0] ?? "/";
-			requests.push({ method: req.method ?? "GET", path, headers: req.headers, body });
+			requests.push({ method: req.method ?? "GET", path, receivedAt: Date.now(), headers: req.headers, body });
 
 			const authorized = (req.headers.authorization ?? "") === `Bearer ${accessToken}`;
 
@@ -249,6 +237,13 @@ export async function startMockUpstream(options: MockOptions = {}): Promise<Mock
 				if (options.chatMode === "malformed") {
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end("{not json at all");
+					return;
+				}
+				if (options.chatDelayMs !== undefined) {
+					await new Promise((resolve) => setTimeout(resolve, options.chatDelayMs));
+				}
+				if (options.chatResponse !== undefined) {
+					sendJson(res, 200, options.chatResponse);
 					return;
 				}
 

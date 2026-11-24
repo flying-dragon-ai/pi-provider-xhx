@@ -4,12 +4,12 @@
 
 **小浣熊 (SenseTime Raccoon) as a first-class [pi](https://pi.dev) provider**
 
-OAuth login · live model catalog · OpenAI-compatible streaming
+OAuth login · live model catalog · OpenAI-compatible responses
 
 [![npm](https://img.shields.io/npm/v/pi-provider-xhx?color=cb3837&label=npm)](https://www.npmjs.com/package/pi-provider-xhx)
 [![pi](https://img.shields.io/badge/pi-extension-blueviolet)](https://pi.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![Tests](https://img.shields.io/badge/tests-54%20passing-brightgreen)](#verification)
+[![Tests](https://img.shields.io/badge/tests-68%20passing-brightgreen)](#verification)
 
 </div>
 
@@ -17,7 +17,7 @@ OAuth login · live model catalog · OpenAI-compatible streaming
 
 A pi extension that connects pi to **小浣熊** — the `xiaohuanxiong.com` web/desktop gateway — as a first-class provider.
 
-**No local proxy process.** The extension speaks the gateway's OpenAI-compatible Chat Completions surface directly, holds the OAuth credentials, refreshes them through pi's auth layer, and streams through pi's own `openai-completions` implementation.
+**No local proxy process.** The extension speaks the gateway's OpenAI-compatible Chat Completions surface directly, holds the OAuth credentials, refreshes them through pi's auth layer, and converts each non-streaming response into pi's assistant event stream.
 
 ## Highlights
 
@@ -28,7 +28,7 @@ A pi extension that connects pi to **小浣熊** — the `xiaohuanxiong.com` web
 | 🧠 **Thinking levels** | pi's thinking levels mapped onto the gateway's `raccoon_thinking` levels |
 | 🖼️ **Multimodal** | Text + image input via OpenAI `content` arrays |
 | 💰 **Zero USD cost** | The gateway bills in points, not per-token USD |
-| 🛡️ **Resilient SSE** | Malformed frames are dropped, not fatal; `stream_options` 400s retried once |
+| 🛡️ **Validated responses** | Business errors, malformed payloads, and filtered responses become explicit errors |
 
 ## Quick start
 
@@ -86,7 +86,7 @@ The authorize page validates the loopback pair strictly — the redirect must be
 
 ### Token lifetime
 
-The access token is a JWT. The extension reads `exp` and schedules a refresh five minutes before it, so a request never races expiry. The refresh token is rotated when the upstream rotates it and kept when it does not.
+The access token is a JWT. The extension reads `exp`, schedules an early refresh, and never extends a short-lived credential beyond its actual JWT expiry. The refresh token is rotated when the upstream rotates it and kept when it does not.
 
 > ⚠️ Do not run a second client (the Go proxy, the desktop app) against the same account: two processes refreshing one refresh token invalidate each other.
 
@@ -118,7 +118,7 @@ The catalog describes each model's thinking control under `params.raccoon_thinki
 | medium | `level_3` | `level_3` |
 | high / xhigh / max | `level_5` | `level_5` |
 
-Pick a level with `/thinking`, `--thinking <level>`, or the model's thinking selector. The gateway always reasons for models that cannot disable it, so `off` means "the lowest level" there. Reasoning arrives as `delta.reasoning_content` and is rendered as thinking blocks.
+Pick a level with `/thinking`, `--thinking <level>`, or the model's thinking selector. The gateway always reasons for models that cannot disable it, so `off` means "the lowest level" there. Reasoning arrives as `message.reasoning_content` and is rendered as thinking blocks.
 
 ---
 
@@ -126,7 +126,7 @@ Pick a level with `/thinking`, `--thinking <level>`, or the model's thinking sel
 
 | Command | What it does |
 | --- | --- |
-| `/xhx` | provider, origin, auth source, token tail, model count, points balance |
+| `/xhx` | provider, origin, chat/catalog endpoints, auth source, token tail, model count, points balance |
 | `/xhx-balance` | `points/v1/balance` |
 | `/xhx-checkin` | triggers the daily points grant (`office/v3/setting_info`) |
 | `/xhx-models` | lists the registered models |
@@ -182,11 +182,9 @@ thinking, usage, and cancellation behave the same.
 
 ## Wire compatibility
 
-pi's `openai-completions` implementation auto-detects compatibility from the provider id and base URL. `xiaohuanxiong.com` matches none of its known hosts, so the detected defaults would be the strict-OpenAI ones — `store: false`, `role: "developer"`, `reasoning_effort`, `max_completion_tokens`. The gateway is a proxy in front of several vendors' models and only guarantees the classic Chat Completions surface, so `src/compat.ts` turns all of those off and sends `max_tokens` instead.
+Model configs record the classic Chat Completions compatibility flags in `src/compat.ts`: no `store`, no `developer` role, no `reasoning_effort`, `max_tokens` instead of `max_completion_tokens`, and no `stream_options`. The active adapter emits that request shape directly.
 
-A single unparseable `data:` frame would make the OpenAI SDK's SSE parser throw and kill an otherwise healthy answer, so `src/sse.ts` wraps fetch and drops only the frames that do not parse. One bad frame costs one frame, not the response.
-
-`stream_options: {include_usage: true}` is kept because usage accounting depends on it. If the gateway rejects that field with a 400, the stream wrapper retries once without it — the rejection happens before any content event, so the retry cannot duplicate output.
+The non-streaming response is validated before any content event is emitted. HTTP errors, business-error envelopes returned with HTTP 200, missing choices, malformed content/tool calls, and unknown or filtered `finish_reason` values become explicit pi error events. Tool argument errors are preserved for tool validation, and usage separates uncached input, cache reads/writes, output, and reasoning tokens.
 
 ---
 
@@ -195,11 +193,11 @@ A single unparseable `data:` frame would make the OpenAI SDK's SSE parser throw 
 ```bash
 npm install
 npm run typecheck
-npm test          # 54 tests against a mock gateway
+npm test          # 68 tests against a mock gateway
 npm run build     # esbuild -> dist/index.js
 ```
 
-`test/mock-upstream.ts` implements the gateway's endpoints with the documented response shapes: the `{code,message,data}` envelope, the `categories[].models[]` catalog, and OpenAI-shaped SSE frames carrying `reasoning_content`, tool calls, and a trailing usage chunk.
+`test/mock-upstream.ts` implements the gateway's endpoints with the documented response shapes: the `{code,message,data}` envelope, the `categories[].models[]` catalog, and non-streaming OpenAI completions carrying `reasoning_content`, tool calls, and usage.
 
 To drive a real `pi` process against it:
 
@@ -213,9 +211,9 @@ XHX_ORIGIN=http://127.0.0.1:18080 XHX_ACCESS_TOKEN=<token> \
 
 ## Verification
 
-What the test suite and the real runs cover:
+What the current test suite and earlier end-to-end runs cover:
 
-- **54 tests against the mock gateway** — login (loopback happy path, state mismatch, expired code, HTTP error, paste fallback), refresh (rotation, no rotation, rejection), catalog parsing and 401 handling, model mapping, streaming (text, `reasoning_content`, usage, tool calls, `stream_options` retry, 401, abort, empty response, malformed frame, split surrogate pair, mid-stream disconnect, image input), account endpoints, provider registration.
+- **68 tests against the mock gateway** — OAuth (loopback, foreign-state recovery, cancellation, expired codes, paste fallback, short-lived JWTs), refresh rotation/rejection, catalog parsing and limits, model mapping, non-streaming completions (text, thinking, usage, tool calls, malformed arguments/responses, HTTP 200 business errors, content filtering, 401, abort, timeout, empty responses, concurrent throttling, request options, system/tool transcript folding, image input), account endpoints, and provider registration.
 - **A real `pi` process against the mock gateway** — text reply, tool-call round trip (pi executed `read` and sent the result back), thinking blocks, and the session-start catalog refresh.
 - **The live gateway with a real account** — `/login xhx` completed through the loopback redirect and stored an IAM JWT; a chat answered `1+1等于2。`; a tool-call round trip read a file and returned its contents; `/xhx-models` listed the seven live catalog models with their upstream descriptions; `points/v1/balance` returned the account's points.
 - **The live host without credentials** — `llm/v2/model_catalog` answers 401, `/code/authorize` answers 307, `auth/v1/refresh` answers `code=100002` for a malformed token, and a chat with a bogus token surfaces `401 authorization_verify_error`.
@@ -227,7 +225,7 @@ What the test suite and the real runs cover:
 
 - The gateway's "upload a file" entry point (upload to the Raccoon side, then reference it) is not implemented; images go inline as `data:` URLs.
 - Image input is declared for every catalog model. Models that do not accept images answer with an upstream error rather than being hidden from the picker.
-- Thinking is read from the stream but not requested: no `reasoning_effort`, `thinking`, or `enable_thinking` field is sent, because the gateway's accepted field differs per vendor.
+- Text arrives in one block because the working v1 endpoint is non-streaming. Thinking is requested through the catalog's `raccoon_thinking` levels; vendor-specific `reasoning_effort`, `thinking`, and `enable_thinking` fields are not sent.
 - Upstream model behaviour, quotas, and risk controls can change without notice.
 
 ---
@@ -242,23 +240,23 @@ The access token is expired or was invalidated by another client refreshing the 
 </details>
 
 <details>
-<summary><b>/login xhx says the state does not match</b></summary>
+<summary><b>A pasted callback URL says the state does not match</b></summary>
 
 The callback URL came from an earlier login attempt. Start the login again and paste the URL from that attempt.
 
 </details>
 
 <details>
-<summary><b>The model list is the six-model fallback</b></summary>
+<summary><b>The model list is the seven-model fallback</b></summary>
 
 The catalog fetch failed. `/xhx` shows the origin and auth source; a 401 there means the token is dead, a timeout means the network.
 
 </details>
 
 <details>
-<summary><b>stream_options errors</b></summary>
+<summary><b>The gateway returns an empty response or a business error</b></summary>
 
-The extension retries once without the field. If the retry also fails, the gateway rejected something else; the error text carries the upstream message.
+Empty choices, malformed JSON, and non-zero business codes are surfaced as errors rather than a successful empty answer. The error text includes the upstream detail; `/xhx` can separately check whether the token and account endpoints still work.
 
 </details>
 

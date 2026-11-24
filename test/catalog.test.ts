@@ -54,6 +54,13 @@ describe("parseCatalog", () => {
 		});
 		expect(entries[0]?.contextWindow).toBe(5);
 	});
+	it("drops fractional values that truncate to zero", () => {
+		const entries = parseCatalog({
+			categories: [{ models: [{ name: "x", context_window: "0.5", max_tokens: " " }] }],
+		});
+		expect(entries[0]?.contextWindow).toBeUndefined();
+		expect(entries[0]?.maxTokens).toBeUndefined();
+	});
 
 	it("returns an empty list for a payload without categories", () => {
 		expect(parseCatalog({ code: 0, data: {} })).toEqual([]);

@@ -109,7 +109,7 @@ interface LoopbackServer {
 }
 
 /** Bind a one-shot HTTP server that receives the OAuth redirect. */
-function startLoopbackServer(): Promise<LoopbackServer> {
+function startLoopbackServer(expectedState: string): Promise<LoopbackServer> {
 	return new Promise((resolve, reject) => {
 		let settle: ((value: { code: string; state: string }) => void) | undefined;
 		const received = new Promise<{ code: string; state: string }>((res) => {
@@ -130,6 +130,11 @@ function startLoopbackServer(): Promise<LoopbackServer> {
 				res.end("missing code");
 				return;
 			}
+			if (state !== expectedState) {
+				res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+				res.end("state mismatch");
+				return;
+			}
 			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
 			res.end(SUCCESS_PAGE);
 			settle?.({ code, state });
@@ -146,17 +151,31 @@ function startLoopbackServer(): Promise<LoopbackServer> {
 				port: address.port,
 				waitForCode(signal, timeoutMs) {
 					return new Promise((res, rej) => {
-						const timer = setTimeout(() => rej(new LoginTimeoutError()), timeoutMs);
-						const onAbort = () => {
-							clearTimeout(timer);
-							rej(new Error("登录已取消"));
-						};
-						signal?.addEventListener("abort", onAbort, { once: true });
-						void received.then((value) => {
-							clearTimeout(timer);
+						let settled = false;
+						let timer: ReturnType<typeof setTimeout> | undefined;
+						const cleanup = () => {
+							if (timer) clearTimeout(timer);
 							signal?.removeEventListener("abort", onAbort);
+						};
+						const resolveOnce = (value: { code: string; state: string }) => {
+							if (settled) return;
+							settled = true;
+							cleanup();
 							res(value);
-						});
+						};
+						const rejectOnce = (error: Error) => {
+							if (settled) return;
+							settled = true;
+							cleanup();
+							rej(error);
+						};
+						function onAbort() {
+							rejectOnce(new Error("登录已取消"));
+						}
+						timer = setTimeout(() => rejectOnce(new LoginTimeoutError()), timeoutMs);
+						signal?.addEventListener("abort", onAbort, { once: true });
+						void received.then(resolveOnce);
+						if (signal?.aborted) onAbort();
 					});
 				},
 				close() {
@@ -205,7 +224,7 @@ function credentialsFromTokens(access: string, refresh: string, extra: Record<st
 	const credentials: XhxCredentials = {
 		access,
 		refresh,
-		expires: expiry > 0 ? Math.max(expiry - EXPIRY_MARGIN_MS, Date.now() + 60_000) : Date.now() + 3_600_000,
+		expires: expiry > 0 ? Math.min(Math.max(expiry - EXPIRY_MARGIN_MS, Date.now() + 60_000), expiry) : Date.now() + 3_600_000,
 	};
 	const userId = jwtUserId(access);
 	if (userId !== "") credentials.userId = userId;
@@ -242,12 +261,13 @@ async function exchangeCode(code: string, signal: AbortSignal | undefined): Prom
 
 /** Run the interactive login. Returns credentials for pi to persist. */
 export async function loginXhx(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+	if (callbacks.signal?.aborted) throw new Error("登录已取消");
 	const origin = resolveOrigin();
 	const state = randomState();
 
 	let server: LoopbackServer | undefined;
 	try {
-		server = await startLoopbackServer();
+		server = await startLoopbackServer(state);
 	} catch {
 		server = undefined;
 	}

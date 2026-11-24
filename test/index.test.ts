@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { claimDailyGrant, fetchBalance, fetchEntitlement } from "../src/api.ts";
 import xhxExtension from "../src/index.ts";
@@ -13,6 +13,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	delete process.env.XHX_ORIGIN;
 	await mock.close();
 });
@@ -36,6 +37,18 @@ describe("account endpoints", () => {
 
 	it("returns the raw entitlement node", async () => {
 		await expect(fetchEntitlement(mock.validAccessToken())).resolves.toEqual({ plan: "free", seats: 1 });
+	});
+	it("rejects malformed JSON in a successful account response", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not json", { status: 200 }));
+		await expect(fetchBalance("token")).rejects.toThrow(/JSON/);
+	});
+
+	it("does not coerce blank balance fields to zero", async () => {
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+			JSON.stringify({ code: 0, data: { available_points: "", daily_points: "   " } }),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		));
+		await expect(fetchBalance("token")).resolves.toEqual({});
 	});
 });
 
@@ -101,7 +114,7 @@ describe("extension factory", () => {
 		const { providers } = load();
 		const refresh = providers.get("xhx")?.refreshModels as (context: unknown) => Promise<unknown>;
 		const models = (await refresh({
-			credential: { type: "oauth", access: mock.validAccessToken(), refresh: "rt", expires: 0 },
+			credential: { type: "oauth", access: `  ${mock.validAccessToken()}  `, refresh: "rt", expires: 0 },
 			allowNetwork: true,
 			signal: new AbortController().signal,
 			publish: async () => true,
